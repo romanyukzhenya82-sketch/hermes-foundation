@@ -1,0 +1,23 @@
+TIME 2026-05-12T22:11:35.894510+00:00
+SOURCE: directional_binance_agents
+
+========================================================================
+MACRO CONTEXT
+========================================================================
+Macro context: | BTC 4h=bullish -0.06% | OI=8531.7M | ETH 4h=bearish +0.21% | OI=5125.9M | Regime: flat / low-volatility
+
+========================================================================
+PRIORITY UNIVERSE
+========================================================================
+Top 15 candidates by score: BNBUSDT, XAUUSDT, DOGEUSDT, PAXGUSDT, HYPEUSDT, XAGUSDT, ZECUSDT, TONUSDT, BCHUSDT, XRPUSDT, TAOUSDT, BTCUSDT, ENAUSDT, LINKUSDT, NEARUSDT
+
+========================================================================
+LONG SIGNALS
+========================================================================
+No long signals at this time.
+
+========================================================================
+SHORT SIGNALS
+========================================================================
+No short signals at this time.
+

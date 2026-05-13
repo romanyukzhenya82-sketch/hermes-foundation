@@ -1,0 +1,88 @@
+TIME 2026-05-12T23:33:49.312472+00:00
+SOURCE: directional_binance_agents
+
+========================================================================
+MACRO CONTEXT
+========================================================================
+Macro context: | BTC 4h=bullish -0.21% | OI=8517.4M | ETH 4h=bearish -0.16% | OI=5091.3M | Regime: flat / low-volatility
+
+========================================================================
+PRIORITY UNIVERSE
+========================================================================
+Top 15 candidates by score: BNBUSDT, PAXGUSDT, DOGEUSDT, TONUSDT, LABUSDT, BTCUSDT, XAGUSDT, ETHUSDT, TAOUSDT, XAUUSDT, HYPEUSDT, ZECUSDT, TRUMPUSDT, SUIUSDT, SKYAIUSDT
+
+========================================================================
+LONG SIGNALS
+========================================================================
+No long signals at this time.
+
+========================================================================
+SHORT SIGNALS
+========================================================================
+No short signals at this time.
+
+========================================================================
+SPOT SIGNALS
+========================================================================
+BNBUSDT | SPOT_LONG | score=161.6 | category=major | mode=spot | leverage=1x
+Entry zone: 665.510000 - 665.510000
+Stop: 663.940000 | TP1: 668.336000 | TP2: 681.702720
+R:R: 1.80 / 0.00 | hold: multi-day | cancel: price closes below 4h support
+Size: 15.0261 contracts | notional=10000.00 USDT | risk=50 USDT
+Formula: qty = 50 / |entry - stop| | spot conservative
+Reason: spot trend + liquidity
+PAXGUSDT | SPOT_LONG | score=146.6 | category=alt | mode=spot | leverage=1x
+Entry zone: 4713.800000 - 4713.800000
+Stop: 4708.500667 | TP1: 4723.338800 | TP2: 4817.805576
+R:R: 1.80 / 0.00 | hold: multi-day | cancel: price closes below 4h support
+Size: 2.1214 contracts | notional=10000.00 USDT | risk=50 USDT
+Formula: qty = 50 / |entry - stop| | spot conservative
+Reason: spot trend + liquidity
+DOGEUSDT | SPOT_LONG | score=145.7 | category=major | mode=spot | leverage=1x
+Entry zone: 0.110130 - 0.110130
+Stop: 0.109709 | TP1: 0.110888 | TP2: 0.113106
+R:R: 1.80 / 0.00 | hold: multi-day | cancel: price closes below 4h support
+Size: 90801.7797 contracts | notional=10000.00 USDT | risk=50 USDT
+Formula: qty = 50 / |entry - stop| | spot conservative
+Reason: spot trend + liquidity
+LABUSDT | SPOT_LONG | score=137.3 | category=alt | mode=spot | leverage=1x
+Entry zone: 4.945800 - 4.945800
+Stop: 4.815687 | TP1: 5.180004 | TP2: 5.283604
+R:R: 1.80 / 0.00 | hold: multi-day | cancel: price closes below 4h support
+Size: 384.2804 contracts | notional=1900.57 USDT | risk=50 USDT
+Formula: qty = 50 / |entry - stop| | spot conservative
+Reason: spot trend + liquidity
+BTCUSDT | SPOT_LONG | score=122.0 | category=major | mode=spot | leverage=1x
+Entry zone: 80621.300000 - 80621.300000
+Stop: 80466.313333 | TP1: 80900.276000 | TP2: 82518.281520
+R:R: 1.80 / 0.00 | hold: multi-day | cancel: price closes below 4h support
+Size: 0.124 contracts | notional=10000.00 USDT | risk=50 USDT
+Formula: qty = 50 / |entry - stop| | spot conservative
+Reason: spot trend + liquidity
+XAGUSDT | SPOT_LONG | score=120.8 | category=alt | mode=spot | leverage=1x
+Entry zone: 86.870000 - 86.870000
+Stop: 86.570667 | TP1: 87.408800 | TP2: 89.156976
+R:R: 1.80 / 0.00 | hold: multi-day | cancel: price closes below 4h support
+Size: 115.1145 contracts | notional=10000.00 USDT | risk=50 USDT
+Formula: qty = 50 / |entry - stop| | spot conservative
+Reason: spot trend + liquidity
+TAOUSDT | SPOT_LONG | score=111.9 | category=alt | mode=spot | leverage=1x
+Entry zone: 310.790000 - 310.790000
+Stop: 309.297667 | TP1: 313.476200 | TP2: 319.745724
+R:R: 1.80 / 0.00 | hold: multi-day | cancel: price closes below 4h support
+Size: 32.1761 contracts | notional=10000.00 USDT | risk=50 USDT
+Formula: qty = 50 / |entry - stop| | spot conservative
+Reason: spot trend + liquidity
+XAUUSDT | SPOT_LONG | score=109.9 | category=alt | mode=spot | leverage=1x
+Entry zone: 4723.210000 - 4723.210000
+Stop: 4717.465667 | TP1: 4733.549800 | TP2: 4828.220796
+R:R: 1.80 / 0.00 | hold: multi-day | cancel: price closes below 4h support
+Size: 2.1172 contracts | notional=10000.00 USDT | risk=50 USDT
+Formula: qty = 50 / |entry - stop| | spot conservative
+Reason: spot trend + liquidity
+
+========================================================================
+ARB SIGNALS
+========================================================================
+No arb signals at this time.
+

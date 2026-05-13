@@ -1,0 +1,6 @@
+C:\Users\DJlinnuJ\hermes_foundation\backtest_moonshot.py:18: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  end = datetime.utcnow()
+DOGEUSDT {'signals': 37, 'wins_5x': 0}
+ZECUSDT {'signals': 0, 'wins_5x': 0}
+TRUMPUSDT {'signals': 29, 'wins_5x': 0}
+HYPEUSDT {'signals': 0, 'wins_5x': 0}

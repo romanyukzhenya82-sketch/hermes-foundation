@@ -1,0 +1,11 @@
+TIME 2026-05-12T22:37:59.874614+00:00
+SOURCE: Binance Futures API
+MACRO CONTEXT:
+Traceback (most recent call last):
+  File "C:\Users\DJlinnuJ\hermes_foundation\deep_binance_analysis.py", line 362, in <module>
+    main()
+    ~~~~^^
+  File "C:\Users\DJlinnuJ\hermes_foundation\deep_binance_analysis.py", line 339, in main
+    print(macro['summary'])
+          ~~~~~^^^^^^^^^^^
+KeyError: 'summary'

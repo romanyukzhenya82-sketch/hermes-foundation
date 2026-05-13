@@ -1,0 +1,25 @@
+TIME 2026-05-12T23:26:08.046138+00:00
+SOURCE: directional_binance_agents
+
+========================================================================
+MACRO CONTEXT
+========================================================================
+Macro context: | Regime: unknown
+
+========================================================================
+PRIORITY UNIVERSE
+========================================================================
+Traceback (most recent call last):
+  File "C:\Users\DJlinnuJ\hermes_foundation\directional_binance_agents.py", line 316, in <module>
+    run_agents()
+    ~~~~~~~~~~^^
+  File "C:\Users\DJlinnuJ\hermes_foundation\directional_binance_agents.py", line 308, in run_agents
+    print_section('PRIORITY UNIVERSE', [f"Top {min(len(rows), MAX_CANDIDATES)} candidates by score: {', '.join(r['symbol'] for r in rows[:MAX_CANDIDATES])}"])
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DJlinnuJ\hermes_foundation\directional_binance_agents.py", line 282, in print_section
+    print(line)
+    ~~~~~^^^^^^
+  File "C:\Python314\Lib\encodings\cp1251.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 78-81: character maps to <undefined>

@@ -1,0 +1,5 @@
+TIME 2026-05-12T09:53:48.104097+00:00
+SOURCE: Binance Futures API
+TOP 12 candidates by score: symbol,score,vol_spike,oi_notional_millions,funding,imbalance,trend15m,trend1h,trend4h
+
+DETAILED SHORTLIST

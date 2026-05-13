@@ -1,0 +1,80 @@
+TIME 2026-05-12T23:51:58.368471+00:00
+SOURCE: directional_binance_agents
+
+========================================================================
+MACRO CONTEXT
+========================================================================
+Macro context: | BTC 4h=bullish -0.42% | OI=8488.2M | ETH 4h=bearish -0.31% | OI=5083.0M | Regime: flat / low-volatility
+
+========================================================================
+PRIORITY UNIVERSE
+========================================================================
+Top 8 candidates by score: BTCUSDT, SOLUSDT, ETHUSDT, XAGUSDT, TAOUSDT, XAUUSDT, UNIUSDT, WLFIUSDT
+
+========================================================================
+LONG SIGNALS
+========================================================================
+XAGUSDT | LONG | score=120.9 | category=alt | mode=futures | leverage=8x
+Entry zone: 86.694100 - 86.782300
+Stop: 86.547100 | TP1: 87.370300 | TP2: 87.664300
+R:R: 2.50 / 3.75 | hold: 15m-1h structure, intra-day/swing | cancel: close below 1h support or macro risk-off
+Size: 425.1701 contracts | notional=36897.24 USDT | risk=100 USDT
+Formula: qty = 100 / |entry - stop| | normal risk
+Reason: trend alignment, liquidity, funding and capital flow
+
+========================================================================
+SHORT SIGNALS
+========================================================================
+No short signals at this time.
+
+========================================================================
+SPOT SIGNALS
+========================================================================
+BTCUSDT | SPOT_LONG | score=140.0 | category=major | mode=spot | leverage=1x
+Entry zone: 80485.900000 - 80485.900000
+Stop: 80333.426667 | TP1: 80760.352000 | TP2: 82375.559040
+R:R: 1.80 / 0.00 | hold: multi-day | cancel: price closes below 4h support
+Size: 0.1242 contracts | notional=10000.00 USDT | risk=50 USDT
+Formula: qty = 50 / |entry - stop| | spot conservative
+Reason: spot trend + liquidity
+SOLUSDT | SPOT_LONG | score=137.8 | category=major | mode=spot | leverage=1x
+Entry zone: 94.380000 - 94.380000
+Stop: 94.107667 | TP1: 94.870200 | TP2: 96.767604
+R:R: 1.80 / 0.00 | hold: multi-day | cancel: price closes below 4h support
+Size: 105.9547 contracts | notional=10000.00 USDT | risk=50 USDT
+Formula: qty = 50 / |entry - stop| | spot conservative
+Reason: spot trend + liquidity
+XAGUSDT | SPOT_LONG | score=120.9 | category=alt | mode=spot | leverage=1x
+Entry zone: 87.100000 - 87.100000
+Stop: 86.806000 | TP1: 87.629200 | TP2: 89.381784
+R:R: 1.80 / 0.00 | hold: multi-day | cancel: price closes below 4h support
+Size: 114.8106 contracts | notional=10000.00 USDT | risk=50 USDT
+Formula: qty = 50 / |entry - stop| | spot conservative
+Reason: spot trend + liquidity
+TAOUSDT | SPOT_LONG | score=108.9 | category=alt | mode=spot | leverage=1x
+Entry zone: 309.780000 - 309.780000
+Stop: 308.349333 | TP1: 312.355200 | TP2: 318.602304
+R:R: 1.80 / 0.00 | hold: multi-day | cancel: price closes below 4h support
+Size: 32.281 contracts | notional=10000.00 USDT | risk=50 USDT
+Formula: qty = 50 / |entry - stop| | spot conservative
+Reason: spot trend + liquidity
+XAUUSDT | SPOT_LONG | score=103.9 | category=alt | mode=spot | leverage=1x
+Entry zone: 4721.570000 - 4721.570000
+Stop: 4715.939333 | TP1: 4731.705200 | TP2: 4826.339304
+R:R: 1.80 / 0.00 | hold: multi-day | cancel: price closes below 4h support
+Size: 2.1179 contracts | notional=10000.00 USDT | risk=50 USDT
+Formula: qty = 50 / |entry - stop| | spot conservative
+Reason: spot trend + liquidity
+UNIUSDT | SPOT_LONG | score=96.1 | category=major | mode=spot | leverage=1x
+Entry zone: 3.762000 - 3.762000
+Stop: 3.748400 | TP1: 3.786480 | TP2: 3.862210
+R:R: 1.80 / 0.00 | hold: multi-day | cancel: price closes below 4h support
+Size: 2658.1606 contracts | notional=10000.00 USDT | risk=50 USDT
+Formula: qty = 50 / |entry - stop| | spot conservative
+Reason: spot trend + liquidity
+
+========================================================================
+ARB SIGNALS
+========================================================================
+No arb signals at this time.
+

@@ -1,0 +1,16 @@
+# Memory State — Foundation
+# Обновляется моделью через [MEMORY UPDATE] или вручную через /update
+
+active_projects: []
+  # - name: "project-name"
+  #   status: active / paused / completed
+  #   stack: [tech1, tech2]
+  #   notes: "краткое описание"
+
+decisions: []
+  # - date: "2026-05-10"
+  #   topic: "выбор БД"
+  #   decision: "PostgreSQL"
+  #   reason: "нужны JSON-запросы + надёжность"
+
+context: "Начальная настройка. Фундамент промпта готов."

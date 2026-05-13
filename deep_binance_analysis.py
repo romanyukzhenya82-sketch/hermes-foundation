@@ -1,0 +1,364 @@
+import math
+import requests
+import statistics
+from news_feed import top_events_summary
+from datetime import datetime, timezone
+
+API_BASE = 'https://fapi.binance.com'
+SCAN_LIMIT = 80
+MIN_VOLUME_USDT = 3_000_000
+MIN_PRICE_USDT = 0.01
+MIN_OI_NOTIONAL = 40_000_000
+MIN_QUOTE_VOLUME = 30_000_000
+MIN_VOL_SPIKE = 0.25
+FRESH_WEIGHT = 12
+
+MAJOR_SYMBOLS = {
+    'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'XRPUSDT', 'SOLUSDT',
+    'ADAUSDT', 'DOGEUSDT', 'MATICUSDT', 'DOTUSDT', 'UNIUSDT',
+}
+MEME_PREFIXES = ('DOGE', 'SHIB', 'PEPE', 'ARB', 'MANA', 'SAND', 'CHZ', 'FTM', 'HNT')
+
+
+def get(url, params=None):
+    return requests.get(url, params=params, timeout=10).json()
+
+
+def categorize_symbol(symbol):
+    if symbol in MAJOR_SYMBOLS:
+        return 'major'
+    if any(symbol.startswith(prefix) for prefix in MEME_PREFIXES):
+        return 'meme'
+    return 'alt'
+
+
+def market_regime(rows):
+    if not rows:
+        return 'unknown'
+
+    sample = rows[:20]
+    bull_count = sum(1 for r in sample if r['trend_4h'] == 'bullish')
+    bear_count = sum(1 for r in sample if r['trend_4h'] == 'bearish')
+    flat_count = sum(1 for r in sample if abs(r['pct4h']) < 0.35)
+    avg_vol = statistics.mean(abs(r['pct4h']) for r in sample)
+
+    if bull_count >= 14 and avg_vol > 0.5:
+        return 'trend / risk-on'
+    if bear_count >= 14 and avg_vol > 0.5:
+        return 'trend / risk-off'
+    if flat_count >= 12 and avg_vol < 0.3:
+        return 'flat / low-volatility'
+    if bull_count >= 6 and bear_count >= 6:
+        return 'chaos / rotation'
+    return 'mixed / rotation'
+
+
+def format_pct(value):
+    return f"{value:+.2f}%"
+
+
+def get_macro_context(rows):
+    btc = next((r for r in rows if r['symbol'] == 'BTCUSDT'), None)
+    eth = next((r for r in rows if r['symbol'] == 'ETHUSDT'), None)
+    total_quote = sum(r['quote_volume'] for r in rows) or 1
+    btc_dom = btc['quote_volume'] / total_quote if btc else 0.0
+    eth_dom = eth['quote_volume'] / total_quote if eth else 0.0
+    regime = market_regime(rows)
+    events = []
+
+    if btc:
+        if abs(btc['funding']) >= 0.02:
+            events.append('BTC funding pressure')
+        if btc['oi_notional'] > 15e9:
+            events.append('BTC OI elevated')
+    if eth:
+        if abs(eth['funding']) >= 0.02:
+            events.append('ETH funding pressure')
+        if eth['oi_notional'] > 9e9:
+            events.append('ETH OI elevated')
+
+    if not events:
+        events.append('No acute funding/OI events')
+
+    # attach top news events (non-blocking)
+    try:
+        news = top_events_summary(limit=3)
+        for n in news:
+            events.append(f"NEWS: {n.get('kw','')} - {n.get('title','')}")
+    except Exception:
+        pass
+
+    return {
+        'btc': btc,
+        'eth': eth,
+        'btc_dominance': btc_dom,
+        'eth_dominance': eth_dom,
+        'regime': regime,
+        'events': events,
+        'summary': (
+            f"Macro regime: {regime} | "
+            f"BTC 4h={btc['trend_4h'] if btc else 'n/a'} {format_pct(btc['pct4h']) if btc else 'n/a'} "
+            f"({btc_dom*100:.1f}% vol) | "
+            f"ETH 4h={eth['trend_4h'] if eth else 'n/a'} {format_pct(eth['pct4h']) if eth else 'n/a'} "
+            f"({eth_dom*100:.1f}% vol)"
+        ),
+        'events_text': '; '.join(events),
+    }
+
+
+def atr(candles):
+    return statistics.mean(
+        [
+            max(
+                float(h) - float(l),
+                abs(float(h) - float(c)),
+                abs(float(l) - float(c)),
+            )
+            for _, o, h, l, c, *_ in candles
+        ]
+    )
+
+
+def trend_direction(candles):
+    first_open = float(candles[0][1])
+    last_close = float(candles[-1][4])
+    return 'bullish' if last_close > first_open else 'bearish'
+
+
+def candle_fresh(candles, interval):
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    last_open = int(candles[-1][0])
+    interval_ms = {
+        '1m': 1 * 60 * 1000,
+        '5m': 5 * 60 * 1000,
+        '15m': 15 * 60 * 1000,
+        '1h': 60 * 60 * 1000,
+        '4h': 4 * 60 * 60 * 1000,
+    }.get(interval, 15 * 60 * 1000)
+    return abs(now_ms - last_open) <= interval_ms * 2
+
+
+def build_candidate_row(t):
+    sym = t['symbol']
+    price = float(t['lastPrice'])
+    if price < MIN_PRICE_USDT:
+        return None
+
+    k15 = get(f'{API_BASE}/fapi/v1/klines', {'symbol': sym, 'interval': '15m', 'limit': 30})
+    k5 = get(f'{API_BASE}/fapi/v1/klines', {'symbol': sym, 'interval': '5m', 'limit': 30})
+    k60 = get(f'{API_BASE}/fapi/v1/klines', {'symbol': sym, 'interval': '1h', 'limit': 30})
+    k240 = get(f'{API_BASE}/fapi/v1/klines', {'symbol': sym, 'interval': '4h', 'limit': 30})
+    funding = get(f'{API_BASE}/fapi/v1/fundingRate', {'symbol': sym, 'limit': 3})
+    depth = get(f'{API_BASE}/fapi/v1/depth', {'symbol': sym, 'limit': 20})
+
+    close15 = [float(c[4]) for c in k15]
+    close5 = [float(c[4]) for c in k5]
+    close60 = [float(c[4]) for c in k60]
+    close240 = [float(c[4]) for c in k240]
+    vol15 = [float(c[5]) for c in k15]
+
+    oi = 0.0
+    try:
+        oi_info = get(f'{API_BASE}/fapi/v1/openInterest', {'symbol': sym})
+        oi = float(oi_info.get('openInterest', 0))
+    except Exception:
+        oi = 0.0
+
+    avg15 = statistics.mean(vol15[:-1]) if len(vol15) > 1 else vol15[-1]
+    vol_spike = vol15[-1] / avg15 if avg15 else 1
+    best_bid = float(depth['bids'][0][0])
+    best_ask = float(depth['asks'][0][0])
+    bid_qty = sum(float(b[1]) for b in depth['bids'][:10])
+    ask_qty = sum(float(a[1]) for a in depth['asks'][:10])
+    ask_bid_imbalance = (ask_qty / bid_qty) if bid_qty else 1
+    funding_rate = float(funding[-1]['fundingRate']) if funding else 0.0
+
+    support_15m = min(float(c[3]) for c in k15[-5:])
+    resistance_15m = max(float(c[2]) for c in k15[-5:])
+    support_1h = min(float(c[3]) for c in k60[-5:])
+    resistance_1h = max(float(c[2]) for c in k60[-5:])
+
+    row = {
+        'symbol': sym,
+        'category': categorize_symbol(sym),
+        'price': price,
+        'trend_5m': trend_direction(k5),
+        'trend_15m': trend_direction(k15),
+        'trend_1h': trend_direction(k60),
+        'trend_4h': trend_direction(k240),
+        'pct5m': 100 * (close5[-1] / close5[-2] - 1) if len(close5) > 1 else 0,
+        'pct15': 100 * (close15[-1] / close15[-2] - 1) if len(close15) > 1 else 0,
+        'pct1h': 100 * (close60[-1] / close60[-2] - 1) if len(close60) > 1 else 0,
+        'pct4h': 100 * (close240[-1] / close240[-2] - 1) if len(close240) > 1 else 0,
+        'atr5': atr(k5),
+        'atr15': atr(k15),
+        'atr1h': atr(k60),
+        'atr4h': atr(k240),
+        'vol_spike': vol_spike,
+        'avg_vol15': statistics.mean(vol15),
+        'funding': funding_rate,
+        'funding_time': int(funding[-1]['fundingTime']) if funding else None,
+        'oi': oi,
+        'oi_notional': oi * price,
+        'spread': best_ask - best_bid,
+        'spread_pct': (best_ask - best_bid) / price if price else 0.0,
+        'ask_bid_imbalance': ask_bid_imbalance,
+        'quote_volume': float(t['quoteVolume']),
+        'fresh_5m': candle_fresh(k5, '5m'),
+        'fresh_15m': candle_fresh(k15, '15m'),
+        'fresh_1h': candle_fresh(k60, '1h'),
+        'fresh_4h': candle_fresh(k240, '4h'),
+        'support_5m': min(float(c[3]) for c in k5[-5:]),
+        'resistance_5m': max(float(c[2]) for c in k5[-5:]),
+        'support_15m': support_15m,
+        'resistance_15m': resistance_15m,
+        'support_1h': support_1h,
+        'resistance_1h': resistance_1h,
+    }
+
+    row['score'] = score_pair(row)
+    return row
+
+
+def scan_universe():
+    tickers = get(f'{API_BASE}/fapi/v1/ticker/24hr')
+    pairs = [
+        t for t in tickers
+        if t['symbol'].endswith('USDT')
+        and 'DOWN' not in t['symbol']
+        and 'UP' not in t['symbol']
+        and float(t['quoteVolume']) >= MIN_QUOTE_VOLUME
+        and float(t['lastPrice']) >= MIN_PRICE_USDT
+    ]
+    return sorted(pairs, key=lambda x: float(x['quoteVolume']), reverse=True)[:SCAN_LIMIT]
+
+
+def select_top_candidates(rows, max_candidates=15):
+    return sorted(rows, key=lambda x: x['score'], reverse=True)[:max_candidates]
+
+
+def scan_market():
+    pairs = scan_universe()
+    rows = []
+    for t in pairs:
+        row = build_candidate_row(t)
+        if not row:
+            continue
+        if row['oi_notional'] < MIN_OI_NOTIONAL or row['quote_volume'] < MIN_QUOTE_VOLUME or row['vol_spike'] < MIN_VOL_SPIKE:
+            continue
+        rows.append(row)
+    return sorted(rows, key=lambda x: x['score'], reverse=True)
+
+
+def score_pair(row):
+    score = 0.0
+    fresh_count = row['fresh_15m'] + row['fresh_1h'] + row['fresh_4h']
+    score += fresh_count * FRESH_WEIGHT
+
+    if row['vol_spike'] >= 1.4:
+        score += min(24, (row['vol_spike'] - 1.0) * 12)
+    elif row['vol_spike'] >= MIN_VOL_SPIKE:
+        score += 8
+    else:
+        score -= 18
+
+    oi_notional = row['oi_notional']
+    if oi_notional >= 500_000_000:
+        score += 30
+    elif oi_notional >= 200_000_000:
+        score += 22
+    elif oi_notional >= MIN_OI_NOTIONAL:
+        score += 12
+    else:
+        score -= 26
+
+    capital_flow_bonus = min(14, max(0.0, (oi_notional / 100_000_000) - 0.4) * 8)
+    score += capital_flow_bonus
+
+    if row['quote_volume'] >= 250_000_000:
+        score += 14
+    elif row['quote_volume'] >= 150_000_000:
+        score += 10
+    elif row['quote_volume'] >= MIN_QUOTE_VOLUME:
+        score += 6
+    else:
+        score -= 10
+
+    spread_pct = row.get('spread_pct', (row['spread'] / row['price']) if row['price'] else 0.0)
+    score -= min(12, spread_pct * 25000)
+    score -= 6 if spread_pct > 0.002 else 0
+
+    if row['price'] < 0.02:
+        score -= 12
+    elif row['price'] < 0.05:
+        score -= 6
+
+    imbalance = row['ask_bid_imbalance']
+    if row['trend_4h'] == 'bullish':
+        score += min(12, max(0.0, 1.0 / max(imbalance, 0.01) - 1.0) * 12)
+    else:
+        score += min(12, max(0.0, imbalance - 1.0) * 12)
+
+    if oi_notional < MIN_OI_NOTIONAL:
+        score -= 10
+    if row['quote_volume'] < MIN_QUOTE_VOLUME:
+        score -= 8
+
+    same_trend = len({row['trend_4h'], row['trend_1h'], row['trend_15m']})
+    if same_trend == 1:
+        score += 30
+    elif same_trend == 2:
+        score += 16
+    else:
+        score -= 24
+
+    funding_support = row['funding']
+    if row['trend_4h'] == 'bullish':
+        score += 14 if funding_support > 0 else -12
+    else:
+        score += 14 if funding_support < 0 else -12
+
+    if row['pct4h'] and ((row['pct4h'] > 0) == (row['trend_4h'] == 'bullish')):
+        score += 8
+    else:
+        score -= 8
+    if row['pct1h'] and ((row['pct1h'] > 0) == (row['trend_1h'] == 'bullish')):
+        score += 6
+    else:
+        score -= 6
+
+    score += 10 if row['pct4h'] * row['pct15'] > 0 else -8
+    return score
+
+
+def main():
+    rows = scan_market()
+    macro = get_macro_context(rows)
+
+    print('TIME', datetime.now(timezone.utc).isoformat())
+    print('SOURCE: Binance Futures API')
+    print('MACRO CONTEXT:')
+    print(macro['summary'])
+    print('EVENTS:', macro['events_text'])
+    print()
+    print('TOP 12 candidates by score: symbol,score,vol_spike,oi_notional_millions,funding,imbalance,trend15m,trend1h,trend4h')
+    for row in rows[:12]:
+        print(
+            f"{row['symbol']},{row['score']:.1f},{row['vol_spike']:.2f},{row['oi_notional'] / 1e6:.2f},{row['funding']:.6f},{row['ask_bid_imbalance']:.2f},{row['trend_15m']},{row['trend_1h']},{row['trend_4h']}"
+        )
+
+    print('\nDETAILED SHORTLIST')
+    for row in rows[:8]:
+        print('\n---')
+        print(f"PAIR: {row['symbol']}")
+        print(f"PRICE: {row['price']}")
+        print(f"TRENDS: 4h={row['trend_4h']} 1h={row['trend_1h']} 15m={row['trend_15m']}")
+        print(f"VOL SPIKE: {row['vol_spike']:.2f}")
+        print(f"OI: {row['oi']:.0f}")
+        print(f"FUNDING: {row['funding']:.6f}")
+        print(f"ASK/BID IMBALANCE: {row['ask_bid_imbalance']:.2f}")
+        print(f"ATR15: {row['atr15']:.4f} ATR1h: {row['atr1h']:.4f}")
+        print(f"SCORE: {row['score']:.1f}")
+
+if __name__ == '__main__':
+    main()
