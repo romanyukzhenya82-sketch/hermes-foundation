@@ -1,0 +1,13 @@
+__pycache__/
+.pytest_cache/
+*.pyc
+.env
+logs/*.log
+moonshot_sweep.csv
+signals_log.jsonl
+agent_*_out.txt
+deep_macro_out*.txt
+brief_out.txt
+moon_bt_out.txt
+*.pdf
+*.html

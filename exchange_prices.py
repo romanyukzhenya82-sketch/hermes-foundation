@@ -1,99 +1,91 @@
-import requests
+import logging
+from typing import Any
+
+import ccxt
+
+logger = logging.getLogger(__name__)
+
+_EXCHANGES: dict[str, ccxt.Exchange] = {}
+_FUTURES_SYMBOLS = {'binance', 'bybit', 'mexc'}
 
 
-def safe_get(url, params=None, timeout=6):
-    try:
-        r = requests.get(url, params=params, timeout=timeout)
-        r.raise_for_status()
-        return r.json()
-    except Exception:
-        return None
+def _ccxt_name(name: str) -> str:
+    mapping = {
+        'binance': 'binanceusdm',
+        'bybit': 'bybit',
+        'mexc': 'mexc3',
+    }
+    return mapping.get(name.lower(), name.lower())
 
 
-def get_binance_price(symbol):
-    data = safe_get('https://api.binance.com/api/v3/ticker/price', {'symbol': symbol})
-    if not data:
-        return None
-    try:
-        return float(data.get('price'))
-    except Exception:
-        return None
+def _symbol(sym: str) -> str:
+    if sym.endswith('USDT') and len(sym) > 4:
+        return sym[:-4] + '/USDT'
+    return sym.replace('_', '/')
 
 
-def get_bybit_price(symbol):
-    # Bybit public tickers v2
-    data = safe_get('https://api.bybit.com/v2/public/tickers', {'symbol': symbol})
-    if not data or 'result' not in data:
-        return None
-    res = data.get('result')
-    if isinstance(res, list) and res:
-        try:
-            return float(res[0].get('last_price'))
-        except Exception:
-            return None
-    return None
-
-
-def get_mexc_price(symbol):
-    # MEXC public API
-    data = safe_get('https://www.mexc.com/api/v3/ticker/price', {'symbol': symbol})
-    if not data:
+def get_exchange(name: str) -> ccxt.Exchange | None:
+    key = name.lower()
+    if key in _EXCHANGES:
+        return _EXCHANGES[key]
+    cname = _ccxt_name(key)
+    if not hasattr(ccxt, cname):
+        logger.debug("unknown exchange: %s", name)
         return None
     try:
-        return float(data.get('price'))
-    except Exception:
+        ex_cls = getattr(ccxt, cname)
+        ex = ex_cls({
+            'enableRateLimit': True,
+            'rateLimit': 1200,
+        })
+        if key in _FUTURES_SYMBOLS:
+            ex.options['defaultType'] = 'swap'
+        _EXCHANGES[key] = ex
+        return ex
+    except Exception as exc:
+        logger.debug("init exchange %s failed: %s", name, exc)
         return None
 
 
-def get_price(exchange, symbol):
-    exchange = exchange.lower()
-    if exchange == 'binance':
-        return get_binance_price(symbol)
-    if exchange == 'bybit':
-        return get_bybit_price(symbol)
-    if exchange == 'mexc':
-        return get_mexc_price(symbol)
-    return None
-
-
-def get_order_book(exchange, symbol, limit=50):
-    """Return order book levels for the given exchange and symbol.
-
-    Returns dict: {'bids': [(price, qty), ...], 'asks': [(price, qty), ...]} or None
-    """
-    exchange = (exchange or '').lower()
+def get_price(exchange: str, symbol: str) -> float | None:
+    ex = get_exchange(exchange)
+    if not ex:
+        return None
     try:
-        if exchange == 'binance':
-            data = safe_get('https://api.binance.com/api/v3/depth', {'symbol': symbol, 'limit': limit})
-            if not data:
-                return None
-            bids = [(float(p), float(q)) for p, q in data.get('bids', [])]
-            asks = [(float(p), float(q)) for p, q in data.get('asks', [])]
-            return {'bids': bids, 'asks': asks}
-        # For other exchanges, best-effort: try fetching a simple ticker/orderbook endpoint
-        if exchange == 'bybit':
-            data = safe_get('https://api.bybit.com/v2/public/orderBook/L2', {'symbol': symbol})
-            # Bybit L2 returns list-like; fallback to None for now
-            return None
-        if exchange == 'mexc':
-            data = safe_get('https://www.mexc.com/api/v3/depth', {'symbol': symbol, 'limit': limit})
-            if not data:
-                return None
-            bids = [(float(p), float(q)) for p, q in data.get('bids', [])]
-            asks = [(float(p), float(q)) for p, q in data.get('asks', [])]
-            return {'bids': bids, 'asks': asks}
-    except Exception:
+        ticker = ex.fetch_ticker(_symbol(symbol))
+        return float(ticker['last'])
+    except Exception as exc:
+        logger.debug("get_price %s %s: %s", exchange, symbol, exc)
         return None
-    return None
 
 
-def estimate_slippage(levels, qty_needed, reference_price=None):
-    """Estimate slippage (as fraction of reference_price) to fill qty_needed using given book levels.
+def get_ticker(exchange: str, symbol: str) -> dict[str, Any] | None:
+    ex = get_exchange(exchange)
+    if not ex:
+        return None
+    try:
+        return ex.fetch_ticker(_symbol(symbol))
+    except Exception as exc:
+        logger.debug("get_ticker %s %s: %s", exchange, symbol, exc)
+        return None
 
-    levels: list of (price, qty) ordered from best->worse for the side being taken.
-    reference_price: mid or top-of-book price to normalise slippage. If None, uses first level price.
-    Returns slippage_pct (float) or None if insufficient depth.
-    """
+
+def get_order_book(exchange: str, symbol: str, limit: int = 50) -> dict[str, Any] | None:
+    ex = get_exchange(exchange)
+    if not ex:
+        return None
+    try:
+        book = ex.fetch_order_book(_symbol(symbol), limit=min(limit, 100))
+        return {
+            'bids': [(float(p), float(q)) for p, q in book['bids']],
+            'asks': [(float(p), float(q)) for p, q in book['asks']],
+        }
+    except Exception as exc:
+        logger.debug("get_order_book %s %s: %s", exchange, symbol, exc)
+        return None
+
+
+def estimate_slippage(levels: list[tuple[float, float]], qty_needed: float, reference_price: float | None = None) -> float | None:
     if not levels or qty_needed <= 0:
         return 0.0
     remaining = qty_needed
@@ -107,7 +99,6 @@ def estimate_slippage(levels, qty_needed, reference_price=None):
         if remaining <= 1e-12:
             break
     if remaining > 1e-6:
-        # insufficient depth
         return None
     avg_price = accum_cost / accum_qty if accum_qty > 0 else None
     if avg_price is None:

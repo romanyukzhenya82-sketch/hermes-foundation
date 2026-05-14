@@ -27,7 +27,7 @@ client = anthropic.Anthropic()  # берёт ключ из ANTHROPIC_API_KEY env
 # --- System Prompt ---
 # Загружается из файла — удобнее редактировать отдельно
 
-SYSTEM_PROMPT_FILE = Path(__file__).parent / "system_prompt.md"
+SYSTEM_PROMPT_FILE = Path(__file__).parent / "system_prompt_fundament.md"
 
 
 def load_system_prompt() -> str:

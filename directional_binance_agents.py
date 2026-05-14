@@ -1,58 +1,33 @@
-import math
+import json
+import logging
+import os
 from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
 
+from config_loader import cfg
 from deep_binance_analysis import get_macro_context, scan_market
 from exchange_prices import get_price, get_order_book, estimate_slippage
 from options_data import get_options_iv
 
-DEFAULT_ACCOUNT_USDT = 10_000
-DEFAULT_RISK_PCT = 0.01
-DEFAULT_LEVERAGE = 8
+logger = logging.getLogger(__name__)
+
+SIGNALS_LOG = Path(__file__).parent / 'signals_log.jsonl'
+
+DEFAULT_ACCOUNT_USDT = cfg.risk.default_account_usdt
+DEFAULT_RISK_PCT = cfg.risk.default_risk_pct
+DEFAULT_LEVERAGE = cfg.risk.default_leverage
 MAX_PRIORITIES = 8
 MAX_CANDIDATES = 15
 
 
-class MacroContext:
-    def __init__(self, rows):
-        self.btc = next((row for row in rows if row['symbol'] == 'BTCUSDT'), None)
-        self.eth = next((row for row in rows if row['symbol'] == 'ETHUSDT'), None)
-        self.regime = self._build_regime()
-        self.summary_text = self._build_summary()
-
-    def _build_regime(self):
-        bulls = sum(1 for asset in (self.btc, self.eth) if asset and asset['trend_4h'] == 'bullish')
-        bears = sum(1 for asset in (self.btc, self.eth) if asset and asset['trend_4h'] == 'bearish')
-        if bulls == 2:
-            return 'trend / risk-on'
-        if bears == 2:
-            return 'trend / risk-off'
-        if self.btc and self.eth:
-            if abs(self.btc['pct4h']) < 0.5 and abs(self.eth['pct4h']) < 0.5:
-                return 'flat / low-volatility'
-            return 'mixed / rotation'
-        return 'unknown'
-
-    def _build_summary(self):
-        parts = ['Macro context:']
-        if self.btc:
-            parts.append(
-                f"BTC 4h={self.btc['trend_4h']} {self.btc['pct4h']:+.2f}% | OI={self.btc['oi_notional'] / 1e6:.1f}M"
-            )
-        if self.eth:
-            parts.append(
-                f"ETH 4h={self.eth['trend_4h']} {self.eth['pct4h']:+.2f}% | OI={self.eth['oi_notional'] / 1e6:.1f}M"
-            )
-        parts.append(f"Regime: {self.regime}")
-        return ' | '.join(parts)
-
-
 class PositionSizer:
-    def __init__(self, account_usdt=DEFAULT_ACCOUNT_USDT, risk_pct=DEFAULT_RISK_PCT, leverage=DEFAULT_LEVERAGE):
+    def __init__(self, account_usdt: float = DEFAULT_ACCOUNT_USDT, risk_pct: float = DEFAULT_RISK_PCT, leverage: int = DEFAULT_LEVERAGE):
         self.account_usdt = account_usdt
         self.risk_pct = risk_pct
         self.leverage = leverage
 
-    def size(self, entry, stop):
+    def size(self, entry: float, stop: float) -> dict[str, Any] | None:
         risk_per_contract = abs(entry - stop)
         risk_amount = self.account_usdt * self.risk_pct
         if risk_per_contract <= 0:
@@ -79,19 +54,19 @@ class PositionSizer:
 
 
 class BaseDirectionalAgent:
-    name = 'base'
-    direction = None
+    name: str = 'base'
+    direction: str | None = None
 
-    def matches(self, row):
+    def matches(self, row: dict[str, Any]) -> bool:
         raise NotImplementedError
 
-    def build_signal(self, row, macro, sizer):
+    def build_signal(self, row: dict[str, Any], macro: dict[str, Any], sizer: PositionSizer) -> dict[str, Any] | None:
         raise NotImplementedError
 
-    def evaluate(self, rows, macro, account_usdt=DEFAULT_ACCOUNT_USDT):
+    def evaluate(self, rows: list[dict[str, Any]], macro: dict[str, Any], account_usdt: float = DEFAULT_ACCOUNT_USDT) -> list[dict[str, Any]]:
         top_rows = rows[:MAX_CANDIDATES]
         filtered = [row for row in top_rows if self.matches(row)]
-        signals = []
+        signals: list[dict[str, Any]] = []
         sizer = PositionSizer(account_usdt=account_usdt)
         for row in filtered[:MAX_PRIORITIES]:
             signal = self.build_signal(row, macro, sizer)
@@ -99,15 +74,18 @@ class BaseDirectionalAgent:
                 signals.append(signal)
         return signals
 
-    def format_signal(self, signal):
+    def format_signal(self, signal: dict[str, Any] | None) -> str | None:
         if signal is None:
             return None
+        leverage = signal.get('leverage', 1)
+        rr1 = signal.get('rr1', 0) or 0
+        rr2 = signal.get('rr2', 0) or 0
         lines = [
             f"{signal['symbol']} | {signal['direction']} | score={signal['score']:.1f} | category={signal['category']}"
-            f" | mode={signal['mode']} | leverage={signal['leverage']}x",
+            f" | mode={signal['mode']} | leverage={leverage}x",
             f"Entry zone: {signal['entry_low']:.6f} - {signal['entry_high']:.6f}",
             f"Stop: {signal['stop']:.6f} | TP1: {signal['tp1']:.6f} | TP2: {signal['tp2']:.6f}",
-            f"R:R: {signal['rr1']:.2f} / {signal['rr2']:.2f} | hold: {signal['holding']} | cancel: {signal['cancel_condition']}",
+            f"R:R: {rr1:.2f} / {rr2:.2f} | hold: {signal['holding']} | cancel: {signal['cancel_condition']}",
             f"Size: {signal['qty']} contracts | notional={signal['notional']:.2f} USDT | risk={signal['risk_amount']:.0f} USDT",
             f"Formula: {signal['size_formula']} | {signal['risk_note']}",
             f"Reason: {signal['reason']}"
@@ -119,25 +97,29 @@ class LongAgent(BaseDirectionalAgent):
     name = 'long'
     direction = 'LONG'
 
-    def matches(self, row):
+    def __init__(self) -> None:
+        self.c = cfg.agents.long
+
+    def matches(self, row: dict[str, Any]) -> bool:
         bull_count = sum(1 for trend in [row['trend_4h'], row['trend_1h'], row['trend_15m']] if trend == 'bullish')
         return (
-            bull_count >= 2
+            bull_count >= self.c.min_bull_count
             and row['trend_4h'] == 'bullish'
-            and row['oi_notional'] >= 45_000_000
-            and row['vol_spike'] >= 1.1
-            and row['spread_pct'] < 0.003
+            and row['oi_notional'] >= self.c.min_oi_notional
+            and row['vol_spike'] >= self.c.min_vol_spike
+            and row['spread_pct'] < self.c.max_spread_pct
         )
 
-    def build_signal(self, row, macro, sizer):
+    def build_signal(self, row: dict[str, Any], macro: dict[str, Any], sizer: PositionSizer) -> dict[str, Any] | None:
+        c = self.c
         support = max(row['support_15m'], row['support_1h'])
         atr = row['atr15']
-        entry_low = support + atr * 0.15
-        entry_high = support + atr * 0.45
+        entry_low = support + atr * c.entry_atr_low
+        entry_high = support + atr * c.entry_atr_high
         entry = min(max(row['price'], entry_low), entry_high)
-        stop = support - atr * 0.35
-        tp1 = entry + max(atr * 2.0, (entry - stop) * 1.6)
-        tp2 = entry + max(atr * 3.0, (entry - stop) * 2.5)
+        stop = support - atr * c.stop_atr_mult
+        tp1 = entry + max(atr * c.tp1_atr_mult, (entry - stop) * c.tp1_rr_min)
+        tp2 = entry + max(atr * c.tp2_atr_mult, (entry - stop) * c.tp2_rr_min)
         rr1 = (tp1 - entry) / (entry - stop) if entry > stop else 0
         rr2 = (tp2 - entry) / (entry - stop) if entry > stop else 0
         sizing = sizer.size(entry, stop)
@@ -174,25 +156,29 @@ class ShortAgent(BaseDirectionalAgent):
     name = 'short'
     direction = 'SHORT'
 
-    def matches(self, row):
+    def __init__(self) -> None:
+        self.c = cfg.agents.short
+
+    def matches(self, row: dict[str, Any]) -> bool:
         bear_count = sum(1 for trend in [row['trend_4h'], row['trend_1h'], row['trend_15m']] if trend == 'bearish')
         return (
-            bear_count >= 2
+            bear_count >= self.c.min_bear_count
             and row['trend_4h'] == 'bearish'
-            and row['oi_notional'] >= 40_000_000
-            and row['vol_spike'] >= 1.1
-            and row['spread_pct'] < 0.003
+            and row['oi_notional'] >= self.c.min_oi_notional
+            and row['vol_spike'] >= self.c.min_vol_spike
+            and row['spread_pct'] < self.c.max_spread_pct
         )
 
-    def build_signal(self, row, macro, sizer):
+    def build_signal(self, row: dict[str, Any], macro: dict[str, Any], sizer: PositionSizer) -> dict[str, Any] | None:
+        c = self.c
         resistance = min(row['resistance_15m'], row['resistance_1h'])
         atr = row['atr15']
-        entry_high = resistance - atr * 0.15
-        entry_low = resistance - atr * 0.45
+        entry_high = resistance - atr * c.entry_atr_low
+        entry_low = resistance - atr * c.entry_atr_high
         entry = max(min(row['price'], entry_high), entry_low)
-        stop = resistance + atr * 0.35
-        tp1 = entry - max(atr * 2.0, (stop - entry) * 1.6)
-        tp2 = entry - max(atr * 3.0, (stop - entry) * 2.5)
+        stop = resistance + atr * c.stop_atr_mult
+        tp1 = entry - max(atr * c.tp1_atr_mult, (stop - entry) * c.tp1_rr_min)
+        tp2 = entry - max(atr * c.tp2_atr_mult, (stop - entry) * c.tp2_rr_min)
         rr1 = (entry - tp1) / (stop - entry) if stop > entry else 0
         rr2 = (entry - tp2) / (stop - entry) if stop > entry else 0
         sizing = sizer.size(entry, stop)
@@ -229,15 +215,24 @@ class SpotAgent(BaseDirectionalAgent):
     name = 'spot'
     direction = 'LONG_SPOT'
 
-    def matches(self, row):
-        # simple spot candidate: strong 4h trend + good volume
-        return row['trend_4h'] == 'bullish' and row['quote_volume'] > 50_000_000 and row['spread_pct'] < 0.002
+    def __init__(self) -> None:
+        self.c = cfg.agents.spot
 
-    def build_signal(self, row, macro, sizer):
-        # spot sizing uses no leverage and smaller risk per trade
+    def matches(self, row: dict[str, Any]) -> bool:
+        return row['trend_4h'] == 'bullish' and row['quote_volume'] > self.c.min_quote_volume and row['spread_pct'] < self.c.max_spread_pct
+
+    def build_signal(self, row: dict[str, Any], macro: dict[str, Any], sizer: PositionSizer) -> dict[str, Any] | None:
+        c = self.c
         entry = row['price']
-        stop = entry - row['atr15'] * 1.0
-        tp1 = entry + row['atr15'] * 1.8
+        atr15 = row['atr15']
+        support_1h = row.get('support_1h', entry - atr15 * c.stop_atr_mult)
+        stop = max(support_1h - atr15 * 0.2, entry - atr15 * c.stop_atr_mult)
+        if stop >= entry:
+            stop = entry - atr15 * c.stop_atr_mult
+        tp1 = entry + atr15 * c.tp1_atr_mult
+        tp2 = tp1 + atr15
+        rr1 = (tp1 - entry) / (entry - stop) if entry > stop else 0
+        rr2 = (tp2 - entry) / (entry - stop) if entry > stop else 0
         sizing = sizer.__class__(account_usdt=sizer.account_usdt, risk_pct=0.005, leverage=1).size(entry, stop)
         return {
             'symbol': row['symbol'],
@@ -250,9 +245,9 @@ class SpotAgent(BaseDirectionalAgent):
             'entry_high': entry,
             'stop': stop,
             'tp1': tp1,
-            'tp2': tp1 * 1.02,
-            'rr1': (tp1 - entry) / (entry - stop) if entry > stop else 0,
-            'rr2': 0,
+            'tp2': tp2,
+            'rr1': rr1,
+            'rr2': rr2,
             'qty': sizing['qty'] if sizing else 0,
             'notional': sizing['position_notional'] if sizing else 0,
             'risk_amount': sizing['risk_amount'] if sizing else 0,
@@ -268,76 +263,86 @@ class ArbAgent(BaseDirectionalAgent):
     name = 'arb'
     direction = 'ARBITRAGE'
 
-    def matches(self, row):
-        # live arbitrage: check prices across exchanges for the same symbol
-        sym = row['symbol']
+    def __init__(self) -> None:
+        self.c = cfg.agents.arb
+        self._cache: dict[str, dict[str, Any]] = {}
+
+    def _fetch_arb_data(self, sym: str, quote_volume: float) -> dict[str, Any] | None:
+        import time
+        now = time.monotonic()
+        cached = self._cache.get(sym)
+        if cached and (now - cached['ts']) < self.c.cache_ttl_sec:
+            return cached['data']
+
         try:
             p_bin = get_price('binance', sym)
             p_byb = get_price('bybit', sym)
             p_mex = get_price('mexc', sym)
-        except Exception:
-            return False
-
-        prices = [("binance", p_bin), ("bybit", p_byb), ("mexc", p_mex)]
-        prices = [p for p in prices if p[1] is not None]
-        if len(prices) < 2:
-            return False
-        prices_sorted = sorted(prices, key=lambda x: x[1])
-        low_name, low_p = prices_sorted[0]
-        high_name, high_p = prices_sorted[-1]
-        spread = (high_p - low_p) / low_p if low_p else 0.0
-
-        # estimate practical profit after fees + slippage using a small notional
-        try:
-            desired_notional = min(10_000, max(2_000, int(row.get('quote_volume', 0) * 0.001)))
+            prices = [("binance", p_bin), ("bybit", p_byb), ("mexc", p_mex)]
+            prices = [(ex, p) for ex, p in prices if p is not None]
+            if len(prices) < 2:
+                self._cache[sym] = {'data': None, 'ts': now}
+                return None
+            prices_sorted = sorted(prices, key=lambda x: x[1])
+            low_name, low_p = prices_sorted[0]
+            high_name, high_p = prices_sorted[-1]
+            spread = (high_p - low_p) / low_p if low_p else 0.0
+            desired_notional = min(10_000, max(2_000, int(quote_volume * 0.001)))
             base_qty = desired_notional / low_p if low_p else 0
             book_buy = get_order_book(low_name, sym, limit=50)
             book_sell = get_order_book(high_name, sym, limit=50)
-            if not book_buy or not book_sell:
-                return False
-            slippage_buy = estimate_slippage(book_buy.get('asks', []), base_qty, reference_price=low_p)
-            slippage_sell = estimate_slippage(book_sell.get('bids', []), base_qty, reference_price=high_p)
-            # if insufficient depth, skip
+            slippage_buy = estimate_slippage(book_buy.get('asks', []), base_qty, reference_price=low_p) if book_buy else None
+            slippage_sell = estimate_slippage(book_sell.get('bids', []), base_qty, reference_price=high_p) if book_sell else None
+            fees_total = self.c.taker_fee_per_side * 2
             if slippage_buy is None or slippage_sell is None:
-                return False
-            taker_fee = 0.0004  # default taker fee per side (0.04%)
-            fees_total = taker_fee * 2
-            effective_profit = spread - fees_total - abs(slippage_buy) - abs(slippage_sell)
-        except Exception:
-            return False
-
-        # require a minimum practical profit (e.g., 0.4%) and some liquidity
-        return effective_profit >= 0.004 and row.get('quote_volume', 0) > 5_000_000
-
-    def build_signal(self, row, macro, sizer):
-        sym = row['symbol']
-        p_bin = get_price('binance', sym)
-        p_byb = get_price('bybit', sym)
-        p_mex = get_price('mexc', sym)
-        prices = [("binance", p_bin), ("bybit", p_byb), ("mexc", p_mex)]
-        prices = [p for p in prices if p[1] is not None]
-        if len(prices) < 2:
+                effective_profit = None
+            else:
+                effective_profit = spread - fees_total - abs(slippage_buy) - abs(slippage_sell)
+            data = {
+                'prices': prices_sorted,
+                'low_name': low_name, 'low_p': low_p,
+                'high_name': high_name, 'high_p': high_p,
+                'spread': spread,
+                'slippage_buy': slippage_buy,
+                'slippage_sell': slippage_sell,
+                'fees_total': fees_total,
+                'effective_profit': effective_profit,
+                'desired_notional': desired_notional,
+                'book_buy': book_buy,
+                'book_sell': book_sell,
+            }
+            self._cache[sym] = {'data': data, 'ts': now}
+            return data
+        except Exception as exc:
+            logger.debug("arb fetch failed for %s: %s", sym, exc)
+            self._cache[sym] = {'data': None, 'ts': now}
             return None
-        prices_sorted = sorted(prices, key=lambda x: x[1])
-        buy_ex, buy_p = prices_sorted[0]
-        sell_ex, sell_p = prices_sorted[-1]
-        spread = (sell_p - buy_p) / buy_p if buy_p else 0.0
+
+    def matches(self, row: dict[str, Any]) -> bool:
+        sym = row['symbol']
+        data = self._fetch_arb_data(sym, row.get('quote_volume', 0))
+        if not data:
+            return False
+        ep = data.get('effective_profit')
+        if ep is None:
+            return False
+        return ep >= self.c.min_effective_profit and row.get('quote_volume', 0) > self.c.min_quote_volume
+
+    def build_signal(self, row: dict[str, Any], macro: dict[str, Any], sizer: PositionSizer) -> dict[str, Any] | None:
+        sym = row['symbol']
+        data = self._fetch_arb_data(sym, row.get('quote_volume', 0))
+        if not data:
+            return None
+        buy_ex = data['low_name']
+        buy_p = data['low_p']
+        sell_ex = data['high_name']
+        sell_p = data['high_p']
+        spread = data['spread']
         entry = buy_p
         stop = entry * 0.995
-        # estimate slippage and fees for suggested notional
-        desired_notional = min(10_000, max(2_000, int(row.get('quote_volume', 0) * 0.001)))
-        base_qty = desired_notional / buy_p if buy_p else 0
-        book_buy = get_order_book(buy_ex, sym, limit=50)
-        book_sell = get_order_book(sell_ex, sym, limit=50)
-        slippage_buy = estimate_slippage(book_buy.get('asks', []), base_qty, reference_price=buy_p) if book_buy else None
-        slippage_sell = estimate_slippage(book_sell.get('bids', []), base_qty, reference_price=sell_p) if book_sell else None
-        taker_fee = 0.0004
-        fees_total = taker_fee * 2
-        est_effective = None
-        if slippage_buy is not None and slippage_sell is not None:
-            est_effective = spread - fees_total - abs(slippage_buy) - abs(slippage_sell)
+        est_effective = data['effective_profit']
 
-        sizing = sizer.__class__(account_usdt=sizer.account_usdt, risk_pct=0.005, leverage=1).size(entry, stop)
+        sizing = sizer.__class__(account_usdt=sizer.account_usdt, risk_pct=cfg.risk.arb_risk_pct, leverage=1).size(entry, stop)
 
         return {
             'symbol': sym,
@@ -345,14 +350,17 @@ class ArbAgent(BaseDirectionalAgent):
             'direction': 'ARB',
             'score': row['score'],
             'mode': 'arb',
+            'leverage': 1,
+            'rr1': 0,
+            'rr2': 0,
             'buy_exchange': buy_ex,
             'sell_exchange': sell_ex,
             'buy_price': buy_p,
             'sell_price': sell_p,
             'spread': spread,
-            'est_slippage_buy': slippage_buy,
-            'est_slippage_sell': slippage_sell,
-            'est_fees': fees_total,
+            'est_slippage_buy': data.get('slippage_buy'),
+            'est_slippage_sell': data.get('slippage_sell'),
+            'est_fees': data.get('fees_total'),
             'est_effective_profit': est_effective,
             'entry_low': entry,
             'entry_high': entry,
@@ -374,12 +382,15 @@ class OptionsAgent(BaseDirectionalAgent):
     name = 'options'
     direction = 'OPTIONS'
 
-    def matches(self, row):
-        # placeholder: flag when funding extreme or high implied move suspected
-        return abs(row.get('funding', 0.0)) >= 0.05 or abs(row.get('pct4h', 0)) >= 8
+    def __init__(self) -> None:
+        self.c = cfg.agents.options
 
-    def build_signal(self, row, macro, sizer):
-        # try to fetch ATM IV and include in the alert
+    def matches(self, row: dict[str, Any]) -> bool:
+        if row['symbol'] not in self.c.underlyings:
+            return False
+        return abs(row.get('funding', 0.0)) >= self.c.funding_extreme or abs(row.get('pct4h', 0)) >= self.c.move_extreme_pct
+
+    def build_signal(self, row: dict[str, Any], macro: dict[str, Any], sizer: PositionSizer) -> dict[str, Any] | None:
         iv = get_options_iv(row['symbol'])
         note = 'options alert: extreme funding or move'
         if iv:
@@ -412,23 +423,24 @@ class MoonshotAgent(BaseDirectionalAgent):
     name = 'moonshot'
     direction = 'MOONSHOT'
 
-    def matches(self, row):
-        # target explosive moves: low liquidity / low price tokens with extreme recent spikes
+    def __init__(self) -> None:
+        self.c = cfg.agents.moonshot
+
+    def matches(self, row: dict[str, Any]) -> bool:
         low_notional = row['oi_notional'] < 10_000_000
-        low_price = row['price'] < 1.0
-        huge_spike = row['vol_spike'] >= 3.0 or abs(row['pct15']) >= 20 or abs(row.get('pct5m', 0)) >= 10
+        low_price = row['price'] < self.c.max_price
+        huge_spike = row['vol_spike'] >= self.c.min_vol_spike or abs(row['pct15']) >= 20 or abs(row.get('pct5m', 0)) >= 10
         meme_flag = row.get('category') == 'meme'
         return (huge_spike and (low_notional or low_price or meme_flag))
 
-    def build_signal(self, row, macro, sizer):
+    def build_signal(self, row: dict[str, Any], macro: dict[str, Any], sizer: PositionSizer) -> dict[str, Any] | None:
+        c = self.c
         entry = row['price']
         atr = row.get('atr5', row.get('atr15', 0.0))
         stop = max(0.0, entry - max(atr * 0.8, entry * 0.05))
-        # speculative targets: 5x and 10x (highly speculative)
-        tp1 = entry * 5.0
-        tp2 = entry * 10.0
-        # tiny risk allocation
-        sizing = sizer.__class__(account_usdt=sizer.account_usdt, risk_pct=0.002, leverage=1).size(entry, stop)
+        tp1 = entry * c.tp1_mult
+        tp2 = entry * c.tp2_mult
+        sizing = sizer.__class__(account_usdt=sizer.account_usdt, risk_pct=cfg.risk.moonshot_risk_pct, leverage=1).size(entry, stop)
 
         return {
             'symbol': row['symbol'],
@@ -455,7 +467,31 @@ class MoonshotAgent(BaseDirectionalAgent):
         }
 
 
-def print_section(title, lines):
+def append_signals_log(signals: list[dict[str, Any]], regime: str) -> None:
+    ts = datetime.now(timezone.utc).isoformat()
+    try:
+        with open(SIGNALS_LOG, 'a', encoding='utf-8') as f:
+            for sig in signals:
+                record = {
+                    'ts': ts,
+                    'symbol': sig.get('symbol'),
+                    'direction': sig.get('direction'),
+                    'entry': sig.get('entry_low'),
+                    'stop': sig.get('stop'),
+                    'tp1': sig.get('tp1'),
+                    'tp2': sig.get('tp2'),
+                    'score': sig.get('score'),
+                    'regime': regime,
+                    'mode': sig.get('mode'),
+                    'rr1': sig.get('rr1'),
+                    'outcome': None,
+                }
+                f.write(json.dumps(record, ensure_ascii=False) + '\n')
+    except Exception as e:
+        logger.warning("signals_log write error: %s", e)
+
+
+def print_section(title: str, lines: list[Any]) -> None:
     print('=' * 72)
     print(title)
     print('=' * 72)
@@ -463,7 +499,6 @@ def print_section(title, lines):
         if line is None:
             continue
         text = line if isinstance(line, str) else str(line)
-        # sanitize for consoles with limited encodings
         try:
             print(text)
         except UnicodeEncodeError:
@@ -471,9 +506,9 @@ def print_section(title, lines):
     print()
 
 
-def run_agents(account_usdt=DEFAULT_ACCOUNT_USDT):
+def run_agents(account_usdt: float = DEFAULT_ACCOUNT_USDT) -> None:
     rows = scan_market()
-    macro = MacroContext(rows)
+    macro = get_macro_context(rows) if rows else {'summary': 'no data', 'events_text': ''}
     long_agent = LongAgent()
     short_agent = ShortAgent()
     spot_agent = SpotAgent()
@@ -487,7 +522,7 @@ def run_agents(account_usdt=DEFAULT_ACCOUNT_USDT):
     print('TIME', datetime.now(timezone.utc).isoformat())
     print('SOURCE: directional_binance_agents')
     print()
-    print_section('MACRO CONTEXT', [macro.summary_text])
+    print_section('MACRO CONTEXT', [macro.get('summary', ''), f"Events: {macro.get('events_text', '')}"])
 
     if not rows:
         print('No market candidates available.')
@@ -498,6 +533,13 @@ def run_agents(account_usdt=DEFAULT_ACCOUNT_USDT):
     print_section('SHORT SIGNALS', [short_agent.format_signal(s) for s in short_signals] if short_signals else ['No short signals at this time.'])
     print_section('SPOT SIGNALS', [spot_agent.format_signal(s) for s in spot_signals] if spot_signals else ['No spot signals at this time.'])
     print_section('ARB SIGNALS', [arb_agent.format_signal(s) for s in arb_signals] if arb_signals else ['No arb signals at this time.'])
+
+    # persist all actionable signals for post-factum evaluation
+    regime = macro.get('regime', 'unknown')
+    all_actionable = long_signals + short_signals
+    if all_actionable:
+        append_signals_log(all_actionable, regime)
+        print(f'[signals_log] +{len(all_actionable)} record(s) appended')
 
 
 if __name__ == '__main__':

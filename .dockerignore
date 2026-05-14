@@ -1,0 +1,15 @@
+__pycache__/
+.pytest_cache/
+.git/
+.github/
+*.pyc
+logs/*.log
+presentation/
+tasks/
+*.pdf
+*.html
+*.csv
+agent_*_out.txt
+deep_*.txt
+brief_out.txt
+moon_bt_out.txt

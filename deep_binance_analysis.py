@@ -1,17 +1,20 @@
-import math
-import requests
+import logging
+import re
 import statistics
-from news_feed import top_events_summary
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
+from typing import Any
+
+import requests
+
+from config_loader import cfg
+from news_feed import top_events_summary
+
+logger = logging.getLogger(__name__)
+
+SYMBOL_RE = re.compile(r'^[A-Z0-9]{2,15}USDT$')
 
 API_BASE = 'https://fapi.binance.com'
-SCAN_LIMIT = 80
-MIN_VOLUME_USDT = 3_000_000
-MIN_PRICE_USDT = 0.01
-MIN_OI_NOTIONAL = 40_000_000
-MIN_QUOTE_VOLUME = 30_000_000
-MIN_VOL_SPIKE = 0.25
-FRESH_WEIGHT = 12
 
 MAJOR_SYMBOLS = {
     'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'XRPUSDT', 'SOLUSDT',
@@ -20,11 +23,11 @@ MAJOR_SYMBOLS = {
 MEME_PREFIXES = ('DOGE', 'SHIB', 'PEPE', 'ARB', 'MANA', 'SAND', 'CHZ', 'FTM', 'HNT')
 
 
-def get(url, params=None):
+def get(url: str, params: dict[str, str] | None = None) -> Any:
     return requests.get(url, params=params, timeout=10).json()
 
 
-def categorize_symbol(symbol):
+def categorize_symbol(symbol: str) -> str:
     if symbol in MAJOR_SYMBOLS:
         return 'major'
     if any(symbol.startswith(prefix) for prefix in MEME_PREFIXES):
@@ -32,7 +35,7 @@ def categorize_symbol(symbol):
     return 'alt'
 
 
-def market_regime(rows):
+def market_regime(rows: list[dict[str, Any]]) -> str:
     if not rows:
         return 'unknown'
 
@@ -53,11 +56,11 @@ def market_regime(rows):
     return 'mixed / rotation'
 
 
-def format_pct(value):
+def format_pct(value: float) -> str:
     return f"{value:+.2f}%"
 
 
-def get_macro_context(rows):
+def get_macro_context(rows: list[dict[str, Any]]) -> dict[str, Any]:
     btc = next((r for r in rows if r['symbol'] == 'BTCUSDT'), None)
     eth = next((r for r in rows if r['symbol'] == 'ETHUSDT'), None)
     total_quote = sum(r['quote_volume'] for r in rows) or 1
@@ -80,13 +83,12 @@ def get_macro_context(rows):
     if not events:
         events.append('No acute funding/OI events')
 
-    # attach top news events (non-blocking)
     try:
         news = top_events_summary(limit=3)
         for n in news:
             events.append(f"NEWS: {n.get('kw','')} - {n.get('title','')}")
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("news feed failed: %s", exc)
 
     return {
         'btc': btc,
@@ -106,7 +108,7 @@ def get_macro_context(rows):
     }
 
 
-def atr(candles):
+def atr(candles: list[list]) -> float:
     return statistics.mean(
         [
             max(
@@ -119,13 +121,13 @@ def atr(candles):
     )
 
 
-def trend_direction(candles):
+def trend_direction(candles: list[list]) -> str:
     first_open = float(candles[0][1])
     last_close = float(candles[-1][4])
     return 'bullish' if last_close > first_open else 'bearish'
 
 
-def candle_fresh(candles, interval):
+def candle_fresh(candles: list[list], interval: str) -> bool:
     now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
     last_open = int(candles[-1][0])
     interval_ms = {
@@ -138,10 +140,10 @@ def candle_fresh(candles, interval):
     return abs(now_ms - last_open) <= interval_ms * 2
 
 
-def build_candidate_row(t):
+def build_candidate_row(t: dict[str, Any]) -> dict[str, Any] | None:
     sym = t['symbol']
     price = float(t['lastPrice'])
-    if price < MIN_PRICE_USDT:
+    if price < cfg.scanner.min_price_usdt:
         return None
 
     k15 = get(f'{API_BASE}/fapi/v1/klines', {'symbol': sym, 'interval': '15m', 'limit': 30})
@@ -161,8 +163,8 @@ def build_candidate_row(t):
     try:
         oi_info = get(f'{API_BASE}/fapi/v1/openInterest', {'symbol': sym})
         oi = float(oi_info.get('openInterest', 0))
-    except Exception:
-        oi = 0.0
+    except Exception as exc:
+        logger.debug("OI fetch failed for %s: %s", sym, exc)
 
     avg15 = statistics.mean(vol15[:-1]) if len(vol15) > 1 else vol15[-1]
     vol_spike = vol15[-1] / avg15 if avg15 else 1
@@ -220,118 +222,131 @@ def build_candidate_row(t):
     return row
 
 
-def scan_universe():
+def scan_universe() -> list[dict[str, Any]]:
     tickers = get(f'{API_BASE}/fapi/v1/ticker/24hr')
     pairs = [
         t for t in tickers
-        if t['symbol'].endswith('USDT')
+        if SYMBOL_RE.match(t['symbol'])
         and 'DOWN' not in t['symbol']
         and 'UP' not in t['symbol']
-        and float(t['quoteVolume']) >= MIN_QUOTE_VOLUME
-        and float(t['lastPrice']) >= MIN_PRICE_USDT
+        and float(t['quoteVolume']) >= cfg.scanner.min_quote_volume
+        and float(t['lastPrice']) >= cfg.scanner.min_price_usdt
     ]
-    return sorted(pairs, key=lambda x: float(x['quoteVolume']), reverse=True)[:SCAN_LIMIT]
+    return sorted(pairs, key=lambda x: float(x['quoteVolume']), reverse=True)[:cfg.scanner.scan_limit]
 
 
-def select_top_candidates(rows, max_candidates=15):
+def select_top_candidates(rows: list[dict[str, Any]], max_candidates: int = 15) -> list[dict[str, Any]]:
     return sorted(rows, key=lambda x: x['score'], reverse=True)[:max_candidates]
 
 
-def scan_market():
-    pairs = scan_universe()
-    rows = []
-    for t in pairs:
+def _build_and_filter(t: dict[str, Any]) -> dict[str, Any] | None:
+    try:
         row = build_candidate_row(t)
         if not row:
-            continue
-        if row['oi_notional'] < MIN_OI_NOTIONAL or row['quote_volume'] < MIN_QUOTE_VOLUME or row['vol_spike'] < MIN_VOL_SPIKE:
-            continue
-        rows.append(row)
+            return None
+        if row['oi_notional'] < cfg.scanner.min_oi_notional or row['quote_volume'] < cfg.scanner.min_quote_volume or row['vol_spike'] < cfg.scanner.min_vol_spike:
+            return None
+        return row
+    except Exception as exc:
+        logger.debug("build_and_filter failed for %s: %s", t.get('symbol', '?'), exc)
+        return None
+
+
+def scan_market(max_workers: int | None = None) -> list[dict[str, Any]]:
+    pairs = scan_universe()
+    rows: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=max_workers or cfg.scanner.scan_workers) as pool:
+        futures = {pool.submit(_build_and_filter, t): t for t in pairs}
+        for future in as_completed(futures):
+            row = future.result()
+            if row:
+                rows.append(row)
     return sorted(rows, key=lambda x: x['score'], reverse=True)
 
 
-def score_pair(row):
+def score_pair(row: dict[str, Any]) -> float:
+    s = cfg.scoring
     score = 0.0
     fresh_count = row['fresh_15m'] + row['fresh_1h'] + row['fresh_4h']
-    score += fresh_count * FRESH_WEIGHT
+    score += fresh_count * s.fresh_weight
 
-    if row['vol_spike'] >= 1.4:
-        score += min(24, (row['vol_spike'] - 1.0) * 12)
-    elif row['vol_spike'] >= MIN_VOL_SPIKE:
-        score += 8
+    if row['vol_spike'] >= s.vol_spike_high_threshold:
+        score += min(24, (row['vol_spike'] - 1.0) * s.vol_spike_high_mult)
+    elif row['vol_spike'] >= cfg.scanner.min_vol_spike:
+        score += s.vol_spike_base_bonus
     else:
-        score -= 18
+        score += s.vol_spike_penalty
 
     oi_notional = row['oi_notional']
-    if oi_notional >= 500_000_000:
+    if oi_notional >= s.oi_tier_high:
         score += 30
-    elif oi_notional >= 200_000_000:
+    elif oi_notional >= s.oi_tier_mid:
         score += 22
-    elif oi_notional >= MIN_OI_NOTIONAL:
+    elif oi_notional >= cfg.scanner.min_oi_notional:
         score += 12
     else:
-        score -= 26
+        score += s.oi_penalty
 
-    capital_flow_bonus = min(14, max(0.0, (oi_notional / 100_000_000) - 0.4) * 8)
+    capital_flow_bonus = min(s.oi_capital_flow_max, max(0.0, (oi_notional / 100_000_000) - 0.4) * 8)
     score += capital_flow_bonus
 
-    if row['quote_volume'] >= 250_000_000:
+    if row['quote_volume'] >= s.qv_tier_high:
         score += 14
-    elif row['quote_volume'] >= 150_000_000:
+    elif row['quote_volume'] >= s.qv_tier_mid:
         score += 10
-    elif row['quote_volume'] >= MIN_QUOTE_VOLUME:
+    elif row['quote_volume'] >= cfg.scanner.min_quote_volume:
         score += 6
     else:
-        score -= 10
+        score += s.qv_penalty
 
     spread_pct = row.get('spread_pct', (row['spread'] / row['price']) if row['price'] else 0.0)
-    score -= min(12, spread_pct * 25000)
-    score -= 6 if spread_pct > 0.002 else 0
+    score -= min(12, spread_pct * s.spread_mult)
+    score += s.spread_wide_penalty if spread_pct > 0.002 else 0
 
     if row['price'] < 0.02:
-        score -= 12
+        score += s.low_price_penalty_02
     elif row['price'] < 0.05:
-        score -= 6
+        score += s.low_price_penalty_05
 
     imbalance = row['ask_bid_imbalance']
     if row['trend_4h'] == 'bullish':
-        score += min(12, max(0.0, 1.0 / max(imbalance, 0.01) - 1.0) * 12)
+        score += min(s.imbalance_max_bonus, max(0.0, 1.0 / max(imbalance, 0.01) - 1.0) * 12)
     else:
-        score += min(12, max(0.0, imbalance - 1.0) * 12)
+        score += min(s.imbalance_max_bonus, max(0.0, imbalance - 1.0) * 12)
 
-    if oi_notional < MIN_OI_NOTIONAL:
-        score -= 10
-    if row['quote_volume'] < MIN_QUOTE_VOLUME:
-        score -= 8
+    if oi_notional < cfg.scanner.min_oi_notional:
+        score += s.oi_small_penalty
+    if row['quote_volume'] < cfg.scanner.min_quote_volume:
+        score += s.qv_small_penalty
 
     same_trend = len({row['trend_4h'], row['trend_1h'], row['trend_15m']})
     if same_trend == 1:
-        score += 30
+        score += s.trend_all_same_bonus
     elif same_trend == 2:
-        score += 16
+        score += s.trend_two_same_bonus
     else:
-        score -= 24
+        score += s.trend_all_diff_penalty
 
     funding_support = row['funding']
     if row['trend_4h'] == 'bullish':
-        score += 14 if funding_support > 0 else -12
+        score += s.funding_align_bonus if funding_support > 0 else s.funding_anti_penalty
     else:
-        score += 14 if funding_support < 0 else -12
+        score += s.funding_align_bonus if funding_support < 0 else s.funding_anti_penalty
 
     if row['pct4h'] and ((row['pct4h'] > 0) == (row['trend_4h'] == 'bullish')):
-        score += 8
+        score += s.pct4h_align_bonus
     else:
-        score -= 8
+        score += s.pct4h_anti_penalty
     if row['pct1h'] and ((row['pct1h'] > 0) == (row['trend_1h'] == 'bullish')):
-        score += 6
+        score += s.pct1h_align_bonus
     else:
-        score -= 6
+        score += s.pct1h_anti_penalty
 
-    score += 10 if row['pct4h'] * row['pct15'] > 0 else -8
+    score += s.pct_cross_bonus if row['pct4h'] * row['pct15'] > 0 else s.pct_cross_penalty
     return score
 
 
-def main():
+def main() -> None:
     rows = scan_market()
     macro = get_macro_context(rows)
 

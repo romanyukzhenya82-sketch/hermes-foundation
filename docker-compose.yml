@@ -1,0 +1,43 @@
+services:
+  hermes-scan:
+    build: .
+    container_name: hermes-scan
+    command: python directional_binance_agents.py
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./logs:/app/logs
+      - ./signals_log.jsonl:/app/signals_log.jsonl
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  hermes-bot:
+    build: .
+    container_name: hermes-bot
+    command: python bot.py
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./logs:/app/logs
+      - ./signals_log.jsonl:/app/signals_log.jsonl
+
+  hermes-api:
+    build: .
+    container_name: hermes-api
+    command: python -m uvicorn api:app --host 0.0.0.0 --port 8000
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./logs:/app/logs
+      - ./signals_log.jsonl:/app/signals_log.jsonl
