@@ -16,6 +16,12 @@ from directional_binance_agents import (
 from exchange_prices import get_price, get_order_book
 
 logger = logging.getLogger(__name__)
+logging.basicConfig(
+    level=logging.WARNING,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    filename=Path(__file__).parent / "logs" / "bot.log",
+    encoding="utf-8",
+)
 
 API_BASE = "https://api.telegram.org/bot{token}"
 POLL_INTERVAL = 5
