@@ -7,13 +7,13 @@ from typing import Any
 
 import requests
 
+from config_loader import cfg
 from deep_binance_analysis import scan_market, get_macro_context
 from directional_binance_agents import (
     LongAgent, ShortAgent, SpotAgent, ArbAgent,
     DEFAULT_ACCOUNT_USDT,
 )
-from exchange_prices import get_price
-from trade_brief import print_brief
+from exchange_prices import get_price, get_order_book
 
 logger = logging.getLogger(__name__)
 
@@ -33,13 +33,21 @@ if _dotenv_path.exists():
 
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 CHAT_ID: int | None = None
+_bot_start_ts = time.time()
 _last_auto_ts: float = 0.0
+_alerts_enabled = True
 
 _known_commands = """
 /scan — top candidates
 /signals — Long/Short/Spot/Arb signals
-/brief SYMBOL — trade brief for symbol (e.g. /brief BTCUSDT)
-/evaluate — show evaluation summary
+/price SYM — current price (e.g. /price BTCUSDT)
+/funding SYM — funding rate
+/depth SYM — order book imbalance
+/brief SYM — trade brief
+/watchlist — aliases for /scan
+/status — system state
+/evaluate — evaluation summary
+/alerts on|off — toggle auto alerts
 /help — this message
 """
 
@@ -128,10 +136,88 @@ def _cmd_signals() -> str:
     return "\n".join(out)
 
 
+def _cmd_price(symbol: str) -> str:
+    prices = []
+    for ex in ("binance", "bybit", "mexc"):
+        p = get_price(ex, symbol)
+        if p is not None:
+            prices.append(f"{ex}: {p:.4f}")
+    if not prices:
+        return f"No price data for {symbol}."
+    return f"<b>{symbol}</b>\n" + "\n".join(prices)
+
+
+def _cmd_funding(symbol: str) -> str:
+    try:
+        r = requests.get(
+            "https://fapi.binance.com/fapi/v1/fundingRate",
+            {"symbol": symbol, "limit": 3},
+            timeout=10,
+        )
+        data = r.json()
+        if not data:
+            return f"No funding data for {symbol}."
+        lines = [f"<b>{symbol} funding</b>"]
+        for entry in reversed(data[-3:]):
+            rate = float(entry["fundingRate"])
+            ts = datetime.fromtimestamp(entry["fundingTime"] / 1000, tz=timezone.utc)
+            lines.append(f"{ts.strftime('%m-%d %H:%M')}: {rate*100:.4f}%")
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"Funding error: {exc}"
+
+
+def _cmd_depth(symbol: str) -> str:
+    book = get_order_book("binance", symbol, limit=20)
+    if not book:
+        return f"No order book for {symbol}."
+    bid_sum = sum(q for _, q in book["bids"][:10])
+    ask_sum = sum(q for _, q in book["asks"][:10])
+    imbalance = ask_sum / bid_sum if bid_sum else float("inf")
+    best_bid = book["bids"][0][0] if book["bids"] else 0
+    best_ask = book["asks"][0][0] if book["asks"] else 0
+    spread = best_ask - best_bid
+    spread_pct = spread / best_bid * 100 if best_bid else 0
+    return (
+        f"<b>{symbol} depth</b>\n"
+        f"Bid: {best_bid:.6f} ({bid_sum:.2f})\n"
+        f"Ask: {best_ask:.6f} ({ask_sum:.2f})\n"
+        f"Spread: {spread:.6f} ({spread_pct:.3f}%)\n"
+        f"Imbalance: {imbalance:.2f}"
+    )
+
+
+def _cmd_status() -> str:
+    uptime_sec = time.time() - _bot_start_ts
+    hours = int(uptime_sec // 3600)
+    mins = int((uptime_sec % 3600) // 60)
+    log_dir = Path(__file__).parent / "logs"
+    log_files = sorted(log_dir.glob("agents_*.log")) if log_dir.exists() else []
+    last_log = ""
+    if log_files:
+        last = log_files[-1]
+        last_log = f"Last scan: {last.stem.replace('agents_', '')}"
+
+    signal_path = Path(__file__).parent / "signals_log.jsonl"
+    signal_count = 0
+    if signal_path.exists():
+        signal_count = len(signal_path.read_text(encoding="utf-8").strip().split("\n"))
+
+    return (
+        f"<b>Hermes Status</b>\n"
+        f"Bot uptime: {hours}h {mins}m\n"
+        f"Alerts: {'ON' if _alerts_enabled else 'OFF'}\n"
+        f"{last_log}\n"
+        f"Total signals: {signal_count}\n"
+        f"Scan interval: hourly"
+    )
+
+
 def _cmd_brief(symbol: str) -> str:
     try:
         import io
         from contextlib import redirect_stdout
+        from trade_brief import print_brief
 
         buf = io.StringIO()
         with redirect_stdout(buf):
@@ -143,7 +229,7 @@ def _cmd_brief(symbol: str) -> str:
 
 
 def _cmd_evaluate() -> str:
-    from evaluate_signals import load_log, group_by, summarise_group
+    from evaluate_signals import load_log, summarise_group
 
     records = load_log()
     if not records:
@@ -168,27 +254,50 @@ def _cmd_evaluate() -> str:
     )
 
 
+def _cmd_alerts(args: str) -> str:
+    global _alerts_enabled
+    arg = args.strip().lower()
+    if arg == "on":
+        _alerts_enabled = True
+        return "Auto alerts ON."
+    if arg == "off":
+        _alerts_enabled = False
+        return "Auto alerts OFF."
+    return f"Alerts: {'ON' if _alerts_enabled else 'OFF'}. Use /alerts on|off"
+
+
 def _dispatch(text: str, chat_id: int) -> None:
     text = text.strip()
     if text == "/start":
         return _cmd_start(chat_id)
-    if text == "/scan":
+    if text in ("/scan", "/watchlist"):
         return send_message(_cmd_scan())
     if text == "/signals":
         return send_message(_cmd_signals())
     if text == "/evaluate":
         return send_message(_cmd_evaluate())
+    if text == "/status":
+        return send_message(_cmd_status())
     if text == "/help":
         return send_message(_known_commands)
+    if text.startswith("/price "):
+        return send_message(_cmd_price(text.split(" ", 1)[1].strip().upper()))
+    if text.startswith("/funding "):
+        return send_message(_cmd_funding(text.split(" ", 1)[1].strip().upper()))
+    if text.startswith("/depth "):
+        return send_message(_cmd_depth(text.split(" ", 1)[1].strip().upper()))
     if text.startswith("/brief "):
-        sym = text.split(" ", 1)[1].strip().upper()
-        return send_message(_cmd_brief(sym))
+        return send_message(_cmd_brief(text.split(" ", 1)[1].strip().upper()))
+    if text.startswith("/alerts"):
+        return send_message(_cmd_alerts(text[7:]))
     if text.startswith("/"):
         return send_message(f"Unknown: {text}\n{_known_commands}")
 
 
 def _auto_alert() -> None:
     global _last_auto_ts
+    if not _alerts_enabled:
+        return
     now = time.time()
     if now - _last_auto_ts < AUTO_ALERT_INTERVAL:
         return
