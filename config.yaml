@@ -45,7 +45,7 @@ scoring:
 
 agents:
   long:
-    min_bull_count: 2          # из [trend_4h, trend_1h, trend_15m] должно быть bullish
+    min_bull_count: 2
     min_oi_notional: 45_000_000
     min_vol_spike: 1.1
     max_spread_pct: 0.003
@@ -56,6 +56,8 @@ agents:
     tp1_rr_min: 1.6
     tp2_atr_mult: 3.0
     tp2_rr_min: 2.5
+    tp3_atr_mult: 4.5
+    allocation_pcts: [50, 30, 20]
 
   short:
     min_bear_count: 2
@@ -69,6 +71,8 @@ agents:
     tp1_rr_min: 1.6
     tp2_atr_mult: 3.0
     tp2_rr_min: 2.5
+    tp3_atr_mult: 4.5
+    allocation_pcts: [50, 30, 20]
 
   spot:
     min_quote_volume: 50_000_000
@@ -106,3 +110,55 @@ backtest:
   min_rr: 1.5
   max_hold_bars: 48
   lookback_days_default: 30
+
+trading_modes:
+  scalp:
+    min_oi_notional: 20_000_000
+    min_vol_spike: 1.5
+    max_spread_pct: 0.002
+    atr_tf: atr5
+    entry_atr_low: 0.10
+    entry_atr_high: 0.25
+    stop_atr_mult: 0.25
+    tp1_atr_mult: 0.8
+    tp1_rr_min: 1.0
+    tp2_atr_mult: 1.5
+    tp2_rr_min: 1.5
+    tp3_atr_mult: 2.5
+    allocation_pcts: [40, 35, 25]
+    leverage: 15
+    risk_pct: 0.005
+
+  intraday:
+    min_oi_notional: 40_000_000
+    min_vol_spike: 1.1
+    max_spread_pct: 0.003
+    atr_tf: atr15
+    entry_atr_low: 0.15
+    entry_atr_high: 0.45
+    stop_atr_mult: 0.35
+    tp1_atr_mult: 2.0
+    tp1_rr_min: 1.6
+    tp2_atr_mult: 3.0
+    tp2_rr_min: 2.5
+    tp3_atr_mult: 4.5
+    allocation_pcts: [50, 30, 20]
+    leverage: 8
+    risk_pct: 0.01
+
+  swing:
+    min_oi_notional: 50_000_000
+    min_vol_spike: 1.0
+    max_spread_pct: 0.004
+    atr_tf: atr4h
+    entry_atr_low: 0.20
+    entry_atr_high: 0.50
+    stop_atr_mult: 0.5
+    tp1_atr_mult: 2.5
+    tp1_rr_min: 2.0
+    tp2_atr_mult: 4.0
+    tp2_rr_min: 3.0
+    tp3_atr_mult: 6.0
+    allocation_pcts: [40, 35, 25]
+    leverage: 5
+    risk_pct: 0.015

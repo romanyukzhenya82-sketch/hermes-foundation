@@ -80,14 +80,19 @@ class BaseDirectionalAgent:
         leverage = signal.get('leverage', 1)
         rr1 = signal.get('rr1', 0) or 0
         rr2 = signal.get('rr2', 0) or 0
+        rr3 = signal.get('rr3', 0) or 0
+        alloc = signal.get('allocation_pcts', [])
+        tp1_a = f" ({alloc[0]}%)" if len(alloc) > 0 else ""
+        tp2_a = f" ({alloc[1]}%)" if len(alloc) > 1 else ""
+        tp3_a = f" ({alloc[2]}%)" if len(alloc) > 2 else ""
         lines = [
-            f"{signal['symbol']} | {signal['direction']} | score={signal['score']:.1f} | category={signal['category']}"
-            f" | mode={signal['mode']} | leverage={leverage}x",
-            f"Entry zone: {signal['entry_low']:.6f} - {signal['entry_high']:.6f}",
-            f"Stop: {signal['stop']:.6f} | TP1: {signal['tp1']:.6f} | TP2: {signal['tp2']:.6f}",
-            f"R:R: {rr1:.2f} / {rr2:.2f} | hold: {signal['holding']} | cancel: {signal['cancel_condition']}",
-            f"Size: {signal['qty']} contracts | notional={signal['notional']:.2f} USDT | risk={signal['risk_amount']:.0f} USDT",
-            f"Formula: {signal['size_formula']} | {signal['risk_note']}",
+            f"{signal['symbol']} | {signal['direction']} | score={signal['score']:.1f} | {signal.get('mode','')} | {leverage}x",
+            f"Entry: {signal['entry_low']:.6f} - {signal['entry_high']:.6f}",
+            f"Stop: {signal['stop']:.6f}",
+            f"TP1: {signal['tp1']:.6f}{tp1_a} | TP2: {signal['tp2']:.6f}{tp2_a} | TP3: {signal['tp3']:.6f}{tp3_a}",
+            f"R:R: {rr1:.2f} / {rr2:.2f} / {rr3:.2f}",
+            f"Risk: {signal['risk_amount']:.0f} USDT | hold: {signal['holding']}",
+            f"Cancel: {signal['cancel_condition']}",
             f"Reason: {signal['reason']}"
         ]
         return '\n'.join(lines)
@@ -97,32 +102,36 @@ class LongAgent(BaseDirectionalAgent):
     name = 'long'
     direction = 'LONG'
 
-    def __init__(self) -> None:
+    def __init__(self, mode: str = "intraday") -> None:
         self.c = cfg.agents.long
+        self.mc = getattr(cfg.trading_modes, mode, cfg.trading_modes.intraday)
+        self.mode_name = mode
 
     def matches(self, row: dict[str, Any]) -> bool:
         bull_count = sum(1 for trend in [row['trend_4h'], row['trend_1h'], row['trend_15m']] if trend == 'bullish')
         return (
             bull_count >= self.c.min_bull_count
             and row['trend_4h'] == 'bullish'
-            and row['oi_notional'] >= self.c.min_oi_notional
-            and row['vol_spike'] >= self.c.min_vol_spike
-            and row['spread_pct'] < self.c.max_spread_pct
+            and row['oi_notional'] >= self.mc.min_oi_notional
+            and row['vol_spike'] >= self.mc.min_vol_spike
+            and row['spread_pct'] < self.mc.max_spread_pct
         )
 
     def build_signal(self, row: dict[str, Any], macro: dict[str, Any], sizer: PositionSizer) -> dict[str, Any] | None:
-        c = self.c
+        mc = self.mc
         support = max(row['support_15m'], row['support_1h'])
-        atr = row['atr15']
-        entry_low = support + atr * c.entry_atr_low
-        entry_high = support + atr * c.entry_atr_high
+        atr = row[mc.atr_tf]
+        entry_low = support + atr * mc.entry_atr_low
+        entry_high = support + atr * mc.entry_atr_high
         entry = min(max(row['price'], entry_low), entry_high)
-        stop = support - atr * c.stop_atr_mult
-        tp1 = entry + max(atr * c.tp1_atr_mult, (entry - stop) * c.tp1_rr_min)
-        tp2 = entry + max(atr * c.tp2_atr_mult, (entry - stop) * c.tp2_rr_min)
+        stop = support - atr * mc.stop_atr_mult
+        tp1 = entry + max(atr * mc.tp1_atr_mult, (entry - stop) * mc.tp1_rr_min)
+        tp2 = entry + max(atr * mc.tp2_atr_mult, (entry - stop) * mc.tp2_rr_min)
+        tp3 = entry + max(atr * mc.tp3_atr_mult, (entry - stop) * (mc.tp2_rr_min + 0.5))
         rr1 = (tp1 - entry) / (entry - stop) if entry > stop else 0
         rr2 = (tp2 - entry) / (entry - stop) if entry > stop else 0
-        sizing = sizer.size(entry, stop)
+        rr3 = (tp3 - entry) / (entry - stop) if entry > stop else 0
+        sizing = sizer.__class__(account_usdt=sizer.account_usdt, risk_pct=mc.risk_pct, leverage=mc.leverage).size(entry, stop)
         risk_note = 'normal risk' if sizing and sizing['risk_amount'] <= sizer.account_usdt * 0.02 else 'aggressive, consider lower risk' if sizing else 'invalid sizing'
         if rr1 < 1.5:
             risk_note = 'low R:R, wait for cleaner structure or smaller position'
@@ -132,21 +141,24 @@ class LongAgent(BaseDirectionalAgent):
             'category': row['category'],
             'direction': self.direction,
             'score': row['score'],
-            'mode': 'futures',
-            'leverage': sizer.leverage,
+            'mode': f"futures_{self.mode_name}",
+            'leverage': mc.leverage,
             'entry_low': entry_low,
             'entry_high': entry_high,
             'stop': stop,
             'tp1': tp1,
             'tp2': tp2,
+            'tp3': tp3,
             'rr1': rr1,
             'rr2': rr2,
+            'rr3': rr3,
+            'allocation_pcts': mc.allocation_pcts,
             'qty': sizing['qty'] if sizing else 0,
             'notional': sizing['position_notional'] if sizing else 0,
             'risk_amount': sizing['risk_amount'] if sizing else 0,
             'size_formula': sizing['formula'] if sizing else '',
             'risk_note': risk_note,
-            'holding': '15m-1h structure, intra-day/swing',
+            'holding': 'scalp' if self.mode_name == 'scalp' else 'intra-day/swing',
             'cancel_condition': 'close below 1h support or macro risk-off',
             'reason': 'trend alignment, liquidity, funding and capital flow',
         }
@@ -156,32 +168,36 @@ class ShortAgent(BaseDirectionalAgent):
     name = 'short'
     direction = 'SHORT'
 
-    def __init__(self) -> None:
+    def __init__(self, mode: str = "intraday") -> None:
         self.c = cfg.agents.short
+        self.mc = getattr(cfg.trading_modes, mode, cfg.trading_modes.intraday)
+        self.mode_name = mode
 
     def matches(self, row: dict[str, Any]) -> bool:
         bear_count = sum(1 for trend in [row['trend_4h'], row['trend_1h'], row['trend_15m']] if trend == 'bearish')
         return (
             bear_count >= self.c.min_bear_count
             and row['trend_4h'] == 'bearish'
-            and row['oi_notional'] >= self.c.min_oi_notional
-            and row['vol_spike'] >= self.c.min_vol_spike
-            and row['spread_pct'] < self.c.max_spread_pct
+            and row['oi_notional'] >= self.mc.min_oi_notional
+            and row['vol_spike'] >= self.mc.min_vol_spike
+            and row['spread_pct'] < self.mc.max_spread_pct
         )
 
     def build_signal(self, row: dict[str, Any], macro: dict[str, Any], sizer: PositionSizer) -> dict[str, Any] | None:
-        c = self.c
+        mc = self.mc
         resistance = min(row['resistance_15m'], row['resistance_1h'])
-        atr = row['atr15']
-        entry_high = resistance - atr * c.entry_atr_low
-        entry_low = resistance - atr * c.entry_atr_high
+        atr = row[mc.atr_tf]
+        entry_high = resistance - atr * mc.entry_atr_low
+        entry_low = resistance - atr * mc.entry_atr_high
         entry = max(min(row['price'], entry_high), entry_low)
-        stop = resistance + atr * c.stop_atr_mult
-        tp1 = entry - max(atr * c.tp1_atr_mult, (stop - entry) * c.tp1_rr_min)
-        tp2 = entry - max(atr * c.tp2_atr_mult, (stop - entry) * c.tp2_rr_min)
+        stop = resistance + atr * mc.stop_atr_mult
+        tp1 = entry - max(atr * mc.tp1_atr_mult, (stop - entry) * mc.tp1_rr_min)
+        tp2 = entry - max(atr * mc.tp2_atr_mult, (stop - entry) * mc.tp2_rr_min)
+        tp3 = entry - max(atr * mc.tp3_atr_mult, (stop - entry) * (mc.tp2_rr_min + 0.5))
         rr1 = (entry - tp1) / (stop - entry) if stop > entry else 0
         rr2 = (entry - tp2) / (stop - entry) if stop > entry else 0
-        sizing = sizer.size(entry, stop)
+        rr3 = (entry - tp3) / (stop - entry) if stop > entry else 0
+        sizing = sizer.__class__(account_usdt=sizer.account_usdt, risk_pct=mc.risk_pct, leverage=mc.leverage).size(entry, stop)
         risk_note = 'normal risk' if sizing and sizing['risk_amount'] <= sizer.account_usdt * 0.02 else 'aggressive, consider lower risk' if sizing else 'invalid sizing'
         if rr1 < 1.5:
             risk_note = 'low R:R, wait for cleaner structure or smaller position'
@@ -191,21 +207,24 @@ class ShortAgent(BaseDirectionalAgent):
             'category': row['category'],
             'direction': self.direction,
             'score': row['score'],
-            'mode': 'futures',
-            'leverage': sizer.leverage,
+            'mode': f"futures_{self.mode_name}",
+            'leverage': mc.leverage,
             'entry_low': entry_low,
             'entry_high': entry_high,
             'stop': stop,
             'tp1': tp1,
             'tp2': tp2,
+            'tp3': tp3,
             'rr1': rr1,
             'rr2': rr2,
+            'rr3': rr3,
+            'allocation_pcts': mc.allocation_pcts,
             'qty': sizing['qty'] if sizing else 0,
             'notional': sizing['position_notional'] if sizing else 0,
             'risk_amount': sizing['risk_amount'] if sizing else 0,
             'size_formula': sizing['formula'] if sizing else '',
             'risk_note': risk_note,
-            'holding': '15m-1h structure, intra-day/swing',
+            'holding': 'scalp' if self.mode_name == 'scalp' else 'intra-day/swing',
             'cancel_condition': 'close above 1h resistance or macro risk-on',
             'reason': 'trend alignment, liquidity, funding and capital flow',
         }
@@ -231,9 +250,11 @@ class SpotAgent(BaseDirectionalAgent):
             stop = entry - atr15 * c.stop_atr_mult
         tp1 = entry + atr15 * c.tp1_atr_mult
         tp2 = tp1 + atr15
+        tp3 = tp2 + atr15
         rr1 = (tp1 - entry) / (entry - stop) if entry > stop else 0
         rr2 = (tp2 - entry) / (entry - stop) if entry > stop else 0
-        sizing = sizer.__class__(account_usdt=sizer.account_usdt, risk_pct=0.005, leverage=1).size(entry, stop)
+        rr3 = (tp3 - entry) / (entry - stop) if entry > stop else 0
+        sizing = sizer.__class__(account_usdt=sizer.account_usdt, risk_pct=cfg.risk.spot_risk_pct, leverage=1).size(entry, stop)
         return {
             'symbol': row['symbol'],
             'category': row['category'],
@@ -246,8 +267,11 @@ class SpotAgent(BaseDirectionalAgent):
             'stop': stop,
             'tp1': tp1,
             'tp2': tp2,
+            'tp3': tp3,
             'rr1': rr1,
             'rr2': rr2,
+            'rr3': rr3,
+            'allocation_pcts': [50, 30, 20],
             'qty': sizing['qty'] if sizing else 0,
             'notional': sizing['position_notional'] if sizing else 0,
             'risk_amount': sizing['risk_amount'] if sizing else 0,

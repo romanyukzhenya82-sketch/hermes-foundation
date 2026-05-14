@@ -79,6 +79,8 @@ class LongAgentConfig:
     tp1_rr_min: float = 1.6
     tp2_atr_mult: float = 3.0
     tp2_rr_min: float = 2.5
+    tp3_atr_mult: float = 4.5
+    allocation_pcts: list = field(default_factory=lambda: [50, 30, 20])
 
 
 @dataclass
@@ -94,6 +96,8 @@ class ShortAgentConfig:
     tp1_rr_min: float = 1.6
     tp2_atr_mult: float = 3.0
     tp2_rr_min: float = 2.5
+    tp3_atr_mult: float = 4.5
+    allocation_pcts: list = field(default_factory=lambda: [50, 30, 20])
 
 
 @dataclass
@@ -156,12 +160,39 @@ class BacktestConfig:
 
 
 @dataclass
+class TradingModeConfig:
+    min_oi_notional: float = 40_000_000
+    min_vol_spike: float = 1.1
+    max_spread_pct: float = 0.003
+    atr_tf: str = "atr15"
+    entry_atr_low: float = 0.15
+    entry_atr_high: float = 0.45
+    stop_atr_mult: float = 0.35
+    tp1_atr_mult: float = 2.0
+    tp1_rr_min: float = 1.6
+    tp2_atr_mult: float = 3.0
+    tp2_rr_min: float = 2.5
+    tp3_atr_mult: float = 4.5
+    allocation_pcts: list = field(default_factory=lambda: [50, 30, 20])
+    leverage: int = 8
+    risk_pct: float = 0.01
+
+
+@dataclass
+class TradingModesConfig:
+    scalp: TradingModeConfig = field(default_factory=TradingModeConfig)
+    intraday: TradingModeConfig = field(default_factory=TradingModeConfig)
+    swing: TradingModeConfig = field(default_factory=TradingModeConfig)
+
+
+@dataclass
 class AppConfig:
     scanner: ScannerConfig = field(default_factory=ScannerConfig)
     scoring: ScoringConfig = field(default_factory=ScoringConfig)
     agents: AgentsConfig = field(default_factory=AgentsConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
     backtest: BacktestConfig = field(default_factory=BacktestConfig)
+    trading_modes: TradingModesConfig = field(default_factory=TradingModesConfig)
 
 
 def _populate(dc_instance, data: dict):
