@@ -229,29 +229,53 @@ def _cmd_brief(symbol: str) -> str:
 
 
 def _cmd_evaluate() -> str:
-    from evaluate_signals import load_log, summarise_group
+    from evaluate_signals import load_log, summarise_group, load_metrics_history
 
     records = load_log()
-    if not records:
-        return "No evaluated signals yet."
-    closed = [
-        r
-        for r in records
-        if r.get("outcome") and r["outcome"] not in ("OPEN", None, "DATA_ERROR", "UNKNOWN_DIR")
-    ]
-    if not closed:
-        return "No closed signals."
+    closed = []
+    if records:
+        closed = [
+            r for r in records
+            if r.get("outcome") and r["outcome"] not in ("OPEN", None, "DATA_ERROR", "UNKNOWN_DIR")
+        ]
 
-    overall = summarise_group("", closed)
-    if not overall:
-        return "No data."
-    return (
-        f"<b>Evaluation</b> ({overall['closed']} closed)\n"
-        f"Winrate: {overall['winrate_pct']}%\n"
-        f"Expectancy: {overall['expectancy_R']}R\n"
-        f"Profit Factor: {overall['profit_factor']}\n"
-        f"Avg hold: {overall['avg_hold_bars']} bars"
-    )
+    history = load_metrics_history(limit=14)
+    lines = []
+
+    if history:
+        last = history[-1]
+        lines.append(
+            f"<b>Current</b> WR={last['winrate_pct']}% "
+            f"E={last['expectancy_R']}R PF={last['profit_factor']} "
+            f"closed={last['closed']}"
+        )
+        if len(history) >= 3:
+            recent_wr = [s["winrate_pct"] for s in history[-3:]]
+            avg_wr = sum(recent_wr) / len(recent_wr)
+            lines.append(f"3-snapshot avg WR: {avg_wr:.1f}%")
+        lines.append("")
+        lines.append("<b>Trend (last 14):</b>")
+        lines.append("date WR% E(R) PF")
+        for s in history[-7:]:
+            lines.append(
+                f"{s['ts'][:10]} {s['winrate_pct']:.1f} {s['expectancy_R']:.2f} {s['profit_factor']:.2f}"
+            )
+    elif closed:
+        overall = summarise_group("", closed)
+        if overall:
+            lines.append(
+                f"<b>Evaluation</b> ({overall['closed']} closed)\n"
+                f"WR={overall['winrate_pct']}% E={overall['expectancy_R']}R "
+                f"PF={overall['profit_factor']}"
+            )
+    else:
+        lines.append("No evaluated signals yet.")
+
+    total_signals = len(records) if records else 0
+    lines.append("")
+    lines.append(f"Total in log: {total_signals}")
+
+    return "\n".join(lines) if lines else "No data."
 
 
 def _cmd_alerts(args: str) -> str:
@@ -302,9 +326,22 @@ def _auto_alert() -> None:
     if now - _last_auto_ts < AUTO_ALERT_INTERVAL:
         return
     _last_auto_ts = now
+
     text = _cmd_signals()
     if "No actionable" not in text:
         send_message(text)
+
+    from evaluate_signals import load_metrics_history
+    history = load_metrics_history(limit=5)
+    if len(history) >= 3:
+        recent = [s["winrate_pct"] for s in history[-3:]]
+        avg = sum(recent) / len(recent)
+        if avg < 45:
+            send_message(
+                f"<b>Quality alert</b>\n"
+                f"3-snapshot avg WR: {avg:.1f}% (threshold: 45%)\n"
+                f"Check: /evaluate"
+            )
 
 
 def poll() -> None:

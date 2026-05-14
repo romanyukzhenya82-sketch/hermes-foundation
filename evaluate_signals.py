@@ -21,7 +21,8 @@ import requests
 
 API = 'https://fapi.binance.com'
 SIGNALS_LOG = Path(__file__).parent / 'signals_log.jsonl'
-CLOSE_HORIZON_HOURS = 24  # через сколько часов считать позицию закрытой
+METRICS_HISTORY = Path(__file__).parent / 'metrics_history.jsonl'
+CLOSE_HORIZON_HOURS = 24
 
 
 def safe_get(url, params=None, timeout=12):
@@ -159,7 +160,7 @@ def evaluate(records, dry_run=False, lookback_days=None, min_closed_age_hours=1)
         rec['pnl_r'] = round(pnl_r(rec, exit_price) if exit_price else 0, 4) if exit_price else None
         rec['evaluated_at'] = now.isoformat()
         updated += 1
-        print(f"  {rec['symbol']} {rec['direction']} {rec['ts'][:16]} → {outcome} pnl={rec['pnl_r']}R")
+        print(f"  {rec['symbol']} {rec['direction']} {rec['ts'][:16]} -> {outcome} pnl={rec['pnl_r']}R")
 
     if not dry_run and updated:
         save_log(records)
@@ -223,25 +224,94 @@ def print_table(rows):
         )
 
 
+def save_metrics_snapshot(records: list[dict]) -> dict | None:
+    closed = [r for r in records if r.get('outcome') and r['outcome'] not in ('OPEN', None, 'DATA_ERROR', 'UNKNOWN_DIR')]
+    if not closed:
+        return None
+    overall = summarise_group('', closed)
+    if not overall:
+        return None
+
+    regimes = [r.get('regime', 'unknown') for r in closed if r.get('regime')]
+    top_regime = max(set(regimes), key=regimes.count) if regimes else 'unknown'
+
+    snapshot = {
+        'ts': datetime.now(timezone.utc).isoformat(),
+        'regime': top_regime,
+        'total_signals': overall['total'],
+        'closed': overall['closed'],
+        'open': overall['open'],
+        'winrate_pct': overall['winrate_pct'],
+        'expectancy_R': overall['expectancy_R'],
+        'profit_factor': overall['profit_factor'],
+        'avg_hold_bars': overall['avg_hold_bars'],
+    }
+    try:
+        with open(METRICS_HISTORY, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(snapshot, ensure_ascii=False) + '\n')
+    except Exception as exc:
+        print(f'[metrics_history] write error: {exc}')
+    return snapshot
+
+
+def load_metrics_history(limit: int = 30) -> list[dict]:
+    if not METRICS_HISTORY.exists():
+        return []
+    with open(METRICS_HISTORY, 'r', encoding='utf-8') as f:
+        lines = [line for line in f if line.strip()]
+    result = [json.loads(line) for line in lines[-limit:]]
+    return result
+
+
+def print_trend(limit: int = 14) -> None:
+    snapshots = load_metrics_history(limit=limit)
+    if not snapshots:
+        print('  No metrics history.')
+        return
+    print(f'  Metrics trend (last {len(snapshots)} snapshots):')
+    print(f"  {'Date':<18} {'WR%':>6} {'E(R)':>7} {'PF':>5} {'Hold':>5} {'Regime'}")
+    print(f"  {'-'*56}")
+    for s in snapshots:
+        dt = s.get('ts', '')[:13]
+        wr = s.get('winrate_pct', 0)
+        er = s.get('expectancy_R', 0)
+        pf = s.get('profit_factor', 0)
+        hold = s.get('avg_hold_bars', 0)
+        regime = s.get('regime', '?')[:16]
+        print(f"  {dt:<18} {wr:>6.1f} {er:>7.3f} {pf:>5.2f} {hold:>5.1f} {regime}")
+
+
 def main():
     parser = argparse.ArgumentParser(description='Evaluate signals from signals_log.jsonl')
     parser.add_argument('--lookback', type=int, default=None, help='Only evaluate signals from last N days')
     parser.add_argument('--dry-run', action='store_true', help='Do not update the log file')
     parser.add_argument('--skip-fetch', action='store_true', help='Skip fetching new outcomes (only show stats)')
+    parser.add_argument('--auto', action='store_true', help='Auto mode: evaluate + save metrics snapshot')
+    parser.add_argument('--trend', type=int, nargs='?', const=14, default=None, help='Show metrics trend (last N snapshots)')
     args = parser.parse_args()
+
+    if args.trend:
+        print_trend(limit=args.trend)
+        return
 
     records = load_log()
     if not records:
         print('signals_log.jsonl is empty or missing.')
         return
 
-    print(f'Loaded {len(records)} records from {SIGNALS_LOG}')
-
     if not args.skip_fetch:
-        print('\nFetching outcomes for open signals...')
         records = evaluate(records, dry_run=args.dry_run, lookback_days=args.lookback)
 
-    # filter to lookback window for stats
+    if args.auto:
+        snapshot = save_metrics_snapshot(records)
+        if snapshot:
+            gate = snapshot['winrate_pct'] >= 52 and snapshot['expectancy_R'] > 0 if snapshot['closed'] >= 20 else None
+            gate_str = f" | GATE={'PASS' if gate else 'FAIL'}" if gate is not None else ''
+            print(f"[auto] WR={snapshot['winrate_pct']}% E={snapshot['expectancy_R']}R PF={snapshot['profit_factor']} closed={snapshot['closed']}{gate_str}")
+        else:
+            print('[auto] no closed signals to evaluate')
+        return
+
     if args.lookback:
         cutoff = datetime.now(timezone.utc) - timedelta(days=args.lookback)
         records = [r for r in records if datetime.fromisoformat(r['ts'].replace('Z', '+00:00')) >= cutoff]
@@ -250,17 +320,14 @@ def main():
     print(f'\nStats window: {len(records)} signals, {len(closed)} closed\n')
 
     rows = []
-    # by direction
     for label, group in group_by(closed, 'direction').items():
         s = summarise_group(label, group)
         if s:
             rows.append(s)
-    # by regime
     for label, group in group_by(closed, 'regime').items():
         s = summarise_group(f'regime:{label}', group)
         if s:
             rows.append(s)
-    # overall
     s = summarise_group('OVERALL', closed)
     if s:
         rows.append(s)
@@ -268,7 +335,6 @@ def main():
     rows.sort(key=lambda x: x['label'])
     print_table(rows)
 
-    # gate check
     overall = summarise_group('OVERALL', closed)
     if overall and overall['closed'] >= 20:
         print()
