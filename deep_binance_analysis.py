@@ -1,6 +1,7 @@
 import logging
 import re
 import statistics
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Any
@@ -21,6 +22,21 @@ MAJOR_SYMBOLS = {
     'ADAUSDT', 'DOGEUSDT', 'MATICUSDT', 'DOTUSDT', 'UNIUSDT',
 }
 MEME_PREFIXES = ('DOGE', 'SHIB', 'PEPE', 'ARB', 'MANA', 'SAND', 'CHZ', 'FTM', 'HNT')
+
+_SCAN_CACHE: dict[str, Any] = {'ts': 0.0, 'rows': [], 'macro': {}}
+_SCAN_CACHE_TTL = 300
+
+
+def get_cached_scan(max_age: float = 300) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    now = time.time()
+    if now - _SCAN_CACHE['ts'] < max_age and _SCAN_CACHE['rows']:
+        return _SCAN_CACHE['rows'], _SCAN_CACHE['macro']
+    rows = scan_market()
+    macro = get_macro_context(rows)
+    _SCAN_CACHE['ts'] = now
+    _SCAN_CACHE['rows'] = rows
+    _SCAN_CACHE['macro'] = macro
+    return rows, macro
 
 
 def get(url: str, params: dict[str, str] | None = None) -> Any:
@@ -262,6 +278,22 @@ def scan_market(max_workers: int | None = None) -> list[dict[str, Any]]:
             if row:
                 rows.append(row)
     return sorted(rows, key=lambda x: x['score'], reverse=True)
+
+
+_SCAN_CACHE: dict[str, Any] = {'ts': 0.0, 'rows': [], 'macro': {}}
+_SCAN_CACHE_TTL = 300
+
+
+def get_cached_scan(max_age: float = _SCAN_CACHE_TTL) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    now = time.time()
+    if now - _SCAN_CACHE['ts'] < max_age and _SCAN_CACHE['rows']:
+        return _SCAN_CACHE['rows'], _SCAN_CACHE['macro']
+    rows = scan_market()
+    macro = get_macro_context(rows)
+    _SCAN_CACHE['ts'] = now
+    _SCAN_CACHE['rows'] = rows
+    _SCAN_CACHE['macro'] = macro
+    return rows, macro
 
 
 def score_pair(row: dict[str, Any]) -> float:

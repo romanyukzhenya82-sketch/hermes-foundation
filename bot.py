@@ -8,7 +8,7 @@ from typing import Any
 import requests
 
 from config_loader import cfg
-from deep_binance_analysis import scan_market, get_macro_context
+from deep_binance_analysis import get_cached_scan
 from directional_binance_agents import (
     LongAgent, ShortAgent, SpotAgent, ArbAgent,
     DEFAULT_ACCOUNT_USDT,
@@ -78,7 +78,7 @@ def _api(method: str, payload: dict | None = None) -> dict[str, Any] | None:
         r.raise_for_status()
         return r.json()
     except Exception as exc:
-        logger.debug("telegram api error %s: %s", method, exc)
+        logger.warning("telegram api error %s: %s", method, exc)
         return None
 
 
@@ -98,10 +98,10 @@ def _cmd_start(chat_id: int) -> None:
 
 
 def _cmd_scan() -> str:
-    rows = scan_market()[:10]
+    rows, macro = get_cached_scan()
+    rows = rows[:10]
     if not rows:
         return "No candidates."
-    macro = get_macro_context(rows)
     lines = [
         f"<b>MACRO:</b> {macro.get('summary', '')}",
         "",
@@ -117,10 +117,9 @@ def _cmd_scan() -> str:
 
 
 def _cmd_signals() -> str:
-    rows = scan_market()
+    rows, macro = get_cached_scan()
     if not rows:
         return "No market data."
-    macro = get_macro_context(rows)
 
     agents: dict[str, Any] = {
         "LONG": LongAgent(),
@@ -165,10 +164,9 @@ def _format_signal(s: dict[str, Any]) -> str:
 
 
 def _signals_for_mode(mode: str, label: str) -> str:
-    rows = scan_market()
+    rows, macro = get_cached_scan()
     if not rows:
         return "No market data."
-    macro = get_macro_context(rows)
     agents: dict[str, Any] = {
         "LONG": LongAgent(mode=mode),
         "SHORT": ShortAgent(mode=mode),
@@ -209,8 +207,7 @@ def _cmd_perf(symbol: str) -> str:
 
 
 def _cmd_regime() -> str:
-    rows = scan_market()[:3]
-    macro = get_macro_context(rows)
+    _, macro = get_cached_scan()
     out = [f"<b>Regime: {macro.get('regime', '?')}</b>"]
     if macro.get("summary"):
         out.append(macro["summary"])
@@ -451,10 +448,9 @@ def _dispatch(text: str, chat_id: int) -> None:
 
 
 def _cmd_spot_signals() -> str:
-    rows = scan_market()
+    rows, macro = get_cached_scan()
     if not rows:
         return "No market data."
-    macro = get_macro_context(rows)
     agent = SpotAgent()
     sigs = agent.evaluate(rows, macro, account_usdt=DEFAULT_ACCOUNT_USDT)
     if not sigs:
@@ -467,10 +463,9 @@ def _cmd_spot_signals() -> str:
 
 
 def _cmd_combo() -> str:
-    rows = scan_market()
+    rows, macro = get_cached_scan()
     if not rows:
         return "No market data."
-    macro = get_macro_context(rows)
     out = [f"<b>COMBO — {macro.get('regime', '?')}</b>", ""]
     for mode, label in [("scalp", "SCALP"), ("intraday", "INTRADAY"), ("swing", "SWING")]:
         agents = {"L": LongAgent(mode=mode), "S": ShortAgent(mode=mode)}
