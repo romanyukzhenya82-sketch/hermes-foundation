@@ -1,16 +1,38 @@
 # Memory State — Foundation
 # Обновляется моделью через [MEMORY UPDATE] или вручную через /update
 
-active_projects: []
-  # - name: "project-name"
-  #   status: active / paused / completed
-  #   stack: [tech1, tech2]
-  #   notes: "краткое описание"
+active_projects:
+  - name: "hermes-foundation"
+    status: active
+    stack: [Python, Binance API, Claude API, Docker, YAML config]
+    notes: >
+      Автоматизированная торговая система на Binance Futures.
+      Компоненты: scanner, scoring, directional_agents, backtest_moonshot,
+      evaluate_signals, deep_analysis, options, arb, spot.
+      Активная ветка: feature/options-moonshot-ci.
 
-decisions: []
-  # - date: "2026-05-10"
-  #   topic: "выбор БД"
-  #   decision: "PostgreSQL"
-  #   reason: "нужны JSON-запросы + надёжность"
+decisions:
+  - date: "2026-05-23"
+    topic: "Архитектура промпта модуля криптоаналитика"
+    decision: >
+      Переписан module_crypto_analyst.md: добавлены [SYSTEM CONTEXT],
+      [LIVE DATA PROTOCOL], [КОМАНДЫ — МОДУЛЬ КРИПТО] (/setup /brief /risk /scan /watchlist /modes).
+      Удалены дубликации с фундаментом.
+    reason: >
+      Модуль существовал в изоляции от системы: агент не знал компоненты,
+      параметры config.yaml не использовались при расчёте позиций,
+      не было LIVE DATA PROTOCOL и команд для быстрого запуска анализа.
+  - date: "2026-05-23"
+    topic: "Фундамент промпта"
+    decision: >
+      Добавлены секции [KNOWLEDGE BASE] и [РЕЕСТР МОДУЛЕЙ]
+      в system_prompt_fundament.md.
+    reason: >
+      Ранее секция [МОДУЛЬНОСТЬ] была абстрактной: нет перечня модулей,
+      resources.md не был подключён как кновледж.
 
-context: "Начальная настройка. Фундамент промпта готов."
+context: >
+  Сессия 2026-05-23. Аудит и оптимизация Hermes Foundation Space.
+  Ветка: feature/options-moonshot-ci.
+  Обновлены: module_crypto_analyst.md, system_prompt_fundament.md.
+  Ожидаем: merge в main.
