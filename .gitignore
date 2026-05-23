@@ -5,9 +5,19 @@ __pycache__/
 logs/*.log
 moonshot_sweep.csv
 signals_log.jsonl
-agent_*_out.txt
-deep_macro_out*.txt
+
+# Output dumps (never commit)
+*_out.txt
+*_out[0-9].txt
+*_out[0-9][0-9].txt
+agent_*_out*.txt
+deep_*_out*.txt
 brief_out.txt
 moon_bt_out.txt
+metrics_history.jsonl
+memory_state.yaml
+
 *.pdf
 *.html
+venv/
+.venv/

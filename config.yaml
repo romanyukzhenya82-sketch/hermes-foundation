@@ -1,6 +1,11 @@
 # Hermes Foundation — конфигурация
 # Правь здесь, не в коде. Перезапуск скрипта применяет изменения.
 
+exchange:
+  name: bybit                  # bybit | binance (через ccxt)
+  market_type: linear          # linear (USDT perps) | spot
+  testnet: false
+
 scanner:
   scan_limit: 80               # макс. пар для скана
   min_quote_volume: 30_000_000 # минимум 24h объём USDT
@@ -99,7 +104,7 @@ agents:
     cache_ttl_sec: 30
 
 risk:
-  default_account_usdt: 10_000
+  default_account_usdt: 1_000
   default_risk_pct: 0.01
   default_leverage: 8
   spot_risk_pct: 0.005

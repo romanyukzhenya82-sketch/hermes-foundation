@@ -1,60 +1,84 @@
-# Hermes Foundation — Market Scanning & Agents
+# Hermes Foundation
 
-This repository contains market scanning and directional agents focused on Binance futures/spot, with additional helpers for arbitrage, options alerts, and a Moonshot backtester.
+Мультиагентная система сканирования рынка и генерации торговых сигналов для перпетуальных контрактов (Bybit USDT-M).
 
-What's included in this branch (`feature/options-moonshot-ci`):
+## Агенты
 
-- `deep_binance_analysis.py` — market scanner and shortlist builder
-- `directional_binance_agents.py` — agents: Long, Short, Spot, Arb, Moonshot, Options
-- `exchange_prices.py` — live price helpers, order book fetch, slippage estimator
-- `options_data.py` — best-effort IV accessor (Deribit)
-- `backtest_moonshot.py` + `run_moonshot_sweep.py` — moonshot detector and parameter sweep runner
-- `tests/` — lightweight pytest tests (PositionSizer, slippage)
-- `.github/workflows/ci.yml` — CI to run `py_compile` and `pytest`
+| Агент | Назначение |
+|-------|-----------|
+| **Long** | Направленные лонги (perps) с ATR-стопами и 3 TP |
+| **Short** | Направленные шорты (perps) |
+| **Spot** | Спотовые покупки (swing) |
+| **Arb** | Арбитраж между биржами (slippage + fee aware) |
+| **Moonshot** | Низкокапы с потенциалом x2-x4 |
+| **Options** | Скелет для опционных алертов (BTC/ETH) |
 
-Quick start
-------------
+## Торговые режимы
 
-1. Create a Python 3.11+ virtualenv and install deps:
+- **Scalp** — 5m ATR, leverage 15x, risk 0.5%
+- **Intraday** — 15m ATR, leverage 8x, risk 1%
+- **Swing** — 4h ATR, leverage 5x, risk 1.5%
+
+## Структура
+
+```
+├── directional_binance_agents.py  # Главный движок (6 агентов)
+├── deep_binance_analysis.py       # Сканер + скоринг рынка
+├── bot.py                         # Telegram-бот
+├── api.py                         # FastAPI endpoint
+├── config.yaml                    # Вся конфигурация
+├── config_loader.py               # Загрузчик конфига
+├── claude_client.py               # Claude API для анализа
+├── exchange_prices.py             # Цены, orderbook, slippage
+├── market_regime.py               # Определение режима рынка
+├── evaluate_signals.py            # Оценка качества сигналов
+├── backtest_directional.py        # Бэктест направленных сигналов
+├── backtest_moonshot.py           # Бэктест moonshot
+├── docs/                          # Спецификации модулей
+├── scripts/                       # Батники и скрипты запуска
+├── tasks/                         # Windows Task Scheduler XML
+└── tests/                         # pytest тесты
+```
+
+## Быстрый старт
 
 ```bash
+# 1. Установка
 python -m pip install -r requirements.txt
-```
 
-2. Run the agents locally (prints shortlist & signals):
+# 2. Настройка
+cp .env.example .env
+# Заполни BYBIT_API_KEY, BYBIT_API_SECRET, ANTHROPIC_API_KEY
 
-```bash
+# 3. Запуск сканера + агентов
 python directional_binance_agents.py
+
+# 4. Тесты
+pytest tests/ -q
 ```
 
-3. Run unit tests:
+## Конфигурация
 
-```bash
-pytest -q
-```
+Вся настройка в `config.yaml`:
+- `exchange` — биржа (bybit/binance), тип рынка
+- `scanner` — параметры скана (объём, OI, спред)
+- `scoring` — веса скоринговой модели
+- `agents` — пороги и параметры каждого агента
+- `risk` — размер депо, риск на сделку, левериджи
+- `trading_modes` — пресеты scalp/intraday/swing
 
-4. Run a quick Moonshot sweep (fast mode, 3 symbols):
+## Стек
 
-```bash
-python run_moonshot_sweep.py
-# output: moonshot_sweep.csv
-```
+- Python 3.11+
+- ccxt (Bybit API)
+- Anthropic Claude (AI-анализ)
+- FastAPI (API-слой)
+- pytest (тесты)
 
-Notes & next steps
-------------------
-- `ArbAgent` now estimates slippage and fees via order book sampling; production usage requires exchange API keys and careful execution logic.
-- `OptionsAgent` is a lightweight alerting skeleton; integrate options chains / IV surfaces (Deribit, Binance Options) to enable sizing and trade generation.
-- The Moonshot backtest is intentionally conservative; extend to larger universes off-line.
+## Статус
 
-To publish changes and create a PR (example):
+🟡 В разработке. Сканер и агенты работают. Нужна адаптация под Bybit API.
 
-```bash
-git remote add origin git@github.com:youruser/yourrepo.git
-git push -u origin feature/options-moonshot-ci
-# then create PR on GitHub or use `gh` cli: gh pr create --fill
-```
+## Лицензия
 
-If you want, I can push this branch to a remote and open a PR — grant the repo/remote or provide the URL.
-
----
-Generated changes summary: options integration, arb hardening (slippage/fees/depth), moonshot sweep runner, tests, CI workflow.
+Private / Personal use only.
