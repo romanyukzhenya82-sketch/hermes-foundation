@@ -186,7 +186,15 @@ class TradingModesConfig:
 
 
 @dataclass
+class ExchangeConfig:
+    name: str = 'bybit'
+    market_type: str = 'linear'
+    testnet: bool = False
+
+
+@dataclass
 class AppConfig:
+    exchange: ExchangeConfig = field(default_factory=ExchangeConfig)
     scanner: ScannerConfig = field(default_factory=ScannerConfig)
     scoring: ScoringConfig = field(default_factory=ScoringConfig)
     agents: AgentsConfig = field(default_factory=AgentsConfig)

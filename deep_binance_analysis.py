@@ -1,3 +1,10 @@
+"""Deep market analysis using ccxt with Bybit Linear Perpetuals.
+
+Scans the Bybit USDT perpetual market for high-scoring trading candidates
+based on volume spikes, open interest, funding rates, order-book imbalance,
+and multi-timeframe trend alignment.
+"""
+
 import logging
 import re
 import statistics
@@ -6,16 +13,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Any
 
-import requests
-
 from config_loader import cfg
+from exchange_prices import get_exchange
 from news_feed import top_events_summary
 
 logger = logging.getLogger(__name__)
 
 SYMBOL_RE = re.compile(r'^[A-Z0-9]{2,15}USDT$')
-
-API_BASE = 'https://fapi.binance.com'
 
 MAJOR_SYMBOLS = {
     'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'XRPUSDT', 'SOLUSDT',
@@ -27,7 +31,8 @@ _SCAN_CACHE: dict[str, Any] = {'ts': 0.0, 'rows': [], 'macro': {}}
 _SCAN_CACHE_TTL = 300
 
 
-def get_cached_scan(max_age: float = 300) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def get_cached_scan(max_age: float = _SCAN_CACHE_TTL) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Return cached scan results or run a fresh scan if stale."""
     now = time.time()
     if now - _SCAN_CACHE['ts'] < max_age and _SCAN_CACHE['rows']:
         return _SCAN_CACHE['rows'], _SCAN_CACHE['macro']
@@ -39,11 +44,27 @@ def get_cached_scan(max_age: float = 300) -> tuple[list[dict[str, Any]], dict[st
     return rows, macro
 
 
-def get(url: str, params: dict[str, str] | None = None) -> Any:
-    return requests.get(url, params=params, timeout=10).json()
+def _get_exchange():
+    """Get or create the Bybit ccxt exchange instance."""
+    return get_exchange('bybit')
+
+
+def _to_ccxt_symbol(symbol: str) -> str:
+    """Convert flat symbol like 'BTCUSDT' to ccxt linear perp format 'BTC/USDT:USDT'."""
+    # Strip the trailing 'USDT' to get the base
+    base = symbol[:-4]
+    return f'{base}/USDT:USDT'
+
+
+def _from_ccxt_symbol(ccxt_symbol: str) -> str:
+    """Convert ccxt symbol 'BTC/USDT:USDT' back to flat format 'BTCUSDT'."""
+    # Extract base from 'BTC/USDT:USDT'
+    base = ccxt_symbol.split('/')[0]
+    return f'{base}USDT'
 
 
 def categorize_symbol(symbol: str) -> str:
+    """Categorize a symbol as major, meme, or alt."""
     if symbol in MAJOR_SYMBOLS:
         return 'major'
     if any(symbol.startswith(prefix) for prefix in MEME_PREFIXES):
@@ -52,6 +73,7 @@ def categorize_symbol(symbol: str) -> str:
 
 
 def market_regime(rows: list[dict[str, Any]]) -> str:
+    """Determine the overall market regime from the top rows."""
     if not rows:
         return 'unknown'
 
@@ -73,17 +95,19 @@ def market_regime(rows: list[dict[str, Any]]) -> str:
 
 
 def format_pct(value: float) -> str:
+    """Format a percentage value with sign."""
     return f"{value:+.2f}%"
 
 
 def get_macro_context(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Build macro context dict from scan rows including BTC/ETH dominance and events."""
     btc = next((r for r in rows if r['symbol'] == 'BTCUSDT'), None)
     eth = next((r for r in rows if r['symbol'] == 'ETHUSDT'), None)
     total_quote = sum(r['quote_volume'] for r in rows) or 1
     btc_dom = btc['quote_volume'] / total_quote if btc else 0.0
     eth_dom = eth['quote_volume'] / total_quote if eth else 0.0
     regime = market_regime(rows)
-    events = []
+    events: list[str] = []
 
     if btc:
         if abs(btc['funding']) >= 0.02:
@@ -125,6 +149,7 @@ def get_macro_context(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def atr(candles: list[list]) -> float:
+    """Average True Range from ccxt OHLCV candles [[ts, o, h, l, c, vol], ...]."""
     return statistics.mean(
         [
             max(
@@ -138,12 +163,14 @@ def atr(candles: list[list]) -> float:
 
 
 def trend_direction(candles: list[list]) -> str:
+    """Determine trend direction from first open to last close."""
     first_open = float(candles[0][1])
     last_close = float(candles[-1][4])
     return 'bullish' if last_close > first_open else 'bearish'
 
 
 def candle_fresh(candles: list[list], interval: str) -> bool:
+    """Check if the last candle is recent enough for the given interval."""
     now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
     last_open = int(candles[-1][0])
     interval_ms = {
@@ -157,46 +184,70 @@ def candle_fresh(candles: list[list], interval: str) -> bool:
 
 
 def build_candidate_row(t: dict[str, Any]) -> dict[str, Any] | None:
+    """Build a full candidate row for a single ticker entry.
+
+    Args:
+        t: dict with keys 'symbol' (flat format like 'BTCUSDT'),
+           'lastPrice' (float), 'quoteVolume' (float).
+
+    Returns:
+        Scored candidate dict or None if filtered out.
+    """
     sym = t['symbol']
     price = float(t['lastPrice'])
     if price < cfg.scanner.min_price_usdt:
         return None
 
-    k15 = get(f'{API_BASE}/fapi/v1/klines', {'symbol': sym, 'interval': '15m', 'limit': 30})
-    k5 = get(f'{API_BASE}/fapi/v1/klines', {'symbol': sym, 'interval': '5m', 'limit': 30})
-    k60 = get(f'{API_BASE}/fapi/v1/klines', {'symbol': sym, 'interval': '1h', 'limit': 30})
-    k240 = get(f'{API_BASE}/fapi/v1/klines', {'symbol': sym, 'interval': '4h', 'limit': 30})
-    funding = get(f'{API_BASE}/fapi/v1/fundingRate', {'symbol': sym, 'limit': 3})
-    depth = get(f'{API_BASE}/fapi/v1/depth', {'symbol': sym, 'limit': 20})
+    exchange = _get_exchange()
+    ccxt_sym = _to_ccxt_symbol(sym)
 
-    close15 = [float(c[4]) for c in k15]
+    # Fetch multi-timeframe OHLCV candles
+    k5 = exchange.fetch_ohlcv(ccxt_sym, '5m', limit=30)
+    k15 = exchange.fetch_ohlcv(ccxt_sym, '15m', limit=30)
+    k60 = exchange.fetch_ohlcv(ccxt_sym, '1h', limit=30)
+    k240 = exchange.fetch_ohlcv(ccxt_sym, '4h', limit=30)
+
+    # Fetch funding rate
+    funding_info = exchange.fetch_funding_rate(ccxt_sym)
+    funding_rate = float(funding_info.get('fundingRate', 0.0) or 0.0)
+    funding_ts = funding_info.get('fundingTimestamp') or funding_info.get('timestamp')
+
+    # Fetch order book
+    depth = exchange.fetch_order_book(ccxt_sym, limit=20)
+
+    # Extract close and volume arrays
     close5 = [float(c[4]) for c in k5]
+    close15 = [float(c[4]) for c in k15]
     close60 = [float(c[4]) for c in k60]
     close240 = [float(c[4]) for c in k240]
     vol15 = [float(c[5]) for c in k15]
 
+    # Open interest
     oi = 0.0
     try:
-        oi_info = get(f'{API_BASE}/fapi/v1/openInterest', {'symbol': sym})
-        oi = float(oi_info.get('openInterest', 0))
+        oi_info = exchange.fetch_open_interest(ccxt_sym)
+        oi = float(oi_info.get('openInterestAmount', 0) or 0)
     except Exception as exc:
         logger.debug("OI fetch failed for %s: %s", sym, exc)
 
+    # Volume spike calculation
     avg15 = statistics.mean(vol15[:-1]) if len(vol15) > 1 else vol15[-1]
     vol_spike = vol15[-1] / avg15 if avg15 else 1
-    best_bid = float(depth['bids'][0][0])
-    best_ask = float(depth['asks'][0][0])
+
+    # Order book metrics
+    best_bid = float(depth['bids'][0][0]) if depth['bids'] else price
+    best_ask = float(depth['asks'][0][0]) if depth['asks'] else price
     bid_qty = sum(float(b[1]) for b in depth['bids'][:10])
     ask_qty = sum(float(a[1]) for a in depth['asks'][:10])
     ask_bid_imbalance = (ask_qty / bid_qty) if bid_qty else 1
-    funding_rate = float(funding[-1]['fundingRate']) if funding else 0.0
 
+    # Support/resistance levels
     support_15m = min(float(c[3]) for c in k15[-5:])
     resistance_15m = max(float(c[2]) for c in k15[-5:])
     support_1h = min(float(c[3]) for c in k60[-5:])
     resistance_1h = max(float(c[2]) for c in k60[-5:])
 
-    row = {
+    row: dict[str, Any] = {
         'symbol': sym,
         'category': categorize_symbol(sym),
         'price': price,
@@ -215,7 +266,7 @@ def build_candidate_row(t: dict[str, Any]) -> dict[str, Any] | None:
         'vol_spike': vol_spike,
         'avg_vol15': statistics.mean(vol15),
         'funding': funding_rate,
-        'funding_time': int(funding[-1]['fundingTime']) if funding else None,
+        'funding_time': int(funding_ts) if funding_ts else None,
         'oi': oi,
         'oi_notional': oi * price,
         'spread': best_ask - best_bid,
@@ -239,23 +290,49 @@ def build_candidate_row(t: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def scan_universe() -> list[dict[str, Any]]:
-    tickers = get(f'{API_BASE}/fapi/v1/ticker/24hr')
-    pairs = [
-        t for t in tickers
-        if SYMBOL_RE.match(t['symbol'])
-        and 'DOWN' not in t['symbol']
-        and 'UP' not in t['symbol']
-        and float(t['quoteVolume']) >= cfg.scanner.min_quote_volume
-        and float(t['lastPrice']) >= cfg.scanner.min_price_usdt
-    ]
-    return sorted(pairs, key=lambda x: float(x['quoteVolume']), reverse=True)[:cfg.scanner.scan_limit]
+    """Fetch all Bybit linear perp tickers and filter to tradeable USDT pairs.
+
+    Returns a list of dicts with keys: 'symbol' (flat format), 'lastPrice', 'quoteVolume'.
+    """
+    exchange = _get_exchange()
+    tickers_raw = exchange.fetch_tickers()
+
+    pairs: list[dict[str, Any]] = []
+    for ccxt_sym, ticker in tickers_raw.items():
+        # Only consider linear USDT perpetuals
+        if not ccxt_sym.endswith(':USDT'):
+            continue
+        flat_sym = _from_ccxt_symbol(ccxt_sym)
+        if not SYMBOL_RE.match(flat_sym):
+            continue
+        if 'DOWN' in flat_sym or 'UP' in flat_sym:
+            continue
+
+        last_price = float(ticker.get('last') or 0)
+        quote_volume = float(ticker.get('quoteVolume') or 0)
+
+        if quote_volume < cfg.scanner.min_quote_volume:
+            continue
+        if last_price < cfg.scanner.min_price_usdt:
+            continue
+
+        pairs.append({
+            'symbol': flat_sym,
+            'lastPrice': last_price,
+            'quoteVolume': quote_volume,
+        })
+
+    pairs.sort(key=lambda x: x['quoteVolume'], reverse=True)
+    return pairs[:cfg.scanner.scan_limit]
 
 
 def select_top_candidates(rows: list[dict[str, Any]], max_candidates: int = 15) -> list[dict[str, Any]]:
+    """Select top N candidates sorted by score descending."""
     return sorted(rows, key=lambda x: x['score'], reverse=True)[:max_candidates]
 
 
 def _build_and_filter(t: dict[str, Any]) -> dict[str, Any] | None:
+    """Build candidate row and apply minimum filters."""
     try:
         row = build_candidate_row(t)
         if not row:
@@ -269,6 +346,10 @@ def _build_and_filter(t: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def scan_market(max_workers: int | None = None) -> list[dict[str, Any]]:
+    """Scan the full Bybit linear perp universe and return scored candidates.
+
+    Uses ThreadPoolExecutor for parallel candidate building.
+    """
     pairs = scan_universe()
     rows: list[dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=max_workers or cfg.scanner.scan_workers) as pool:
@@ -280,23 +361,8 @@ def scan_market(max_workers: int | None = None) -> list[dict[str, Any]]:
     return sorted(rows, key=lambda x: x['score'], reverse=True)
 
 
-_SCAN_CACHE: dict[str, Any] = {'ts': 0.0, 'rows': [], 'macro': {}}
-_SCAN_CACHE_TTL = 300
-
-
-def get_cached_scan(max_age: float = _SCAN_CACHE_TTL) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    now = time.time()
-    if now - _SCAN_CACHE['ts'] < max_age and _SCAN_CACHE['rows']:
-        return _SCAN_CACHE['rows'], _SCAN_CACHE['macro']
-    rows = scan_market()
-    macro = get_macro_context(rows)
-    _SCAN_CACHE['ts'] = now
-    _SCAN_CACHE['rows'] = rows
-    _SCAN_CACHE['macro'] = macro
-    return rows, macro
-
-
 def score_pair(row: dict[str, Any]) -> float:
+    """Score a candidate pair based on multiple factors. Returns float score."""
     s = cfg.scoring
     score = 0.0
     fresh_count = row['fresh_15m'] + row['fresh_1h'] + row['fresh_4h']
@@ -379,11 +445,12 @@ def score_pair(row: dict[str, Any]) -> float:
 
 
 def main() -> None:
+    """Run a full market scan and print results."""
     rows = scan_market()
     macro = get_macro_context(rows)
 
     print('TIME', datetime.now(timezone.utc).isoformat())
-    print('SOURCE: Binance Futures API')
+    print('SOURCE: Bybit Linear Perpetuals')
     print('MACRO CONTEXT:')
     print(macro['summary'])
     print('EVENTS:', macro['events_text'])
@@ -406,6 +473,7 @@ def main() -> None:
         print(f"ASK/BID IMBALANCE: {row['ask_bid_imbalance']:.2f}")
         print(f"ATR15: {row['atr15']:.4f} ATR1h: {row['atr1h']:.4f}")
         print(f"SCORE: {row['score']:.1f}")
+
 
 if __name__ == '__main__':
     main()
