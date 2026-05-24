@@ -36,7 +36,7 @@ def get_exchange(name: str) -> ccxt.Exchange | None:
         ex_cls = getattr(ccxt, cname)
         ex = ex_cls({
             'enableRateLimit': True,
-            'rateLimit': 1200,
+            'timeout': 30000,
         })
         if key in _FUTURES_SYMBOLS:
             ex.options['defaultType'] = 'swap'

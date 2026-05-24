@@ -231,8 +231,16 @@ def build_candidate_row(t: dict[str, Any]) -> dict[str, Any] | None:
         logger.debug("OI fetch failed for %s: %s", sym, exc)
 
     # Volume spike calculation
-    avg15 = statistics.mean(vol15[:-1]) if len(vol15) > 1 else vol15[-1]
-    vol_spike = vol15[-1] / avg15 if avg15 else 1
+    # Use second-to-last candle (last completed) vs average of prior candles
+    # The very last candle may still be forming and have low volume
+    if len(vol15) >= 3:
+        last_complete_vol = vol15[-2]
+        avg15_prior = statistics.mean(vol15[:-2])
+        vol_spike = last_complete_vol / avg15_prior if avg15_prior else 1
+    elif len(vol15) == 2:
+        vol_spike = vol15[-2] / vol15[-1] if vol15[-1] else 1
+    else:
+        vol_spike = 1.0
 
     # Order book metrics
     best_bid = float(depth['bids'][0][0]) if depth['bids'] else price
